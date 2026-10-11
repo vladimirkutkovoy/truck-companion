@@ -5058,6 +5058,15 @@ document.getElementById('recenterBtn').addEventListener('click', () => {
   resumeMapFollow();
 });
 
+function changeMapZoom(delta) {
+  if (!map) return;
+  navAutoZoomPaused = true;
+  const zoom = Math.max(map.getMinZoom(), Math.min(map.getMaxZoom(), map.getZoom() + delta));
+  map.jumpTo({ zoom });
+}
+document.getElementById('zoomInBtn').addEventListener('click', () => changeMapZoom(1));
+document.getElementById('zoomOutBtn').addEventListener('click', () => changeMapZoom(-1));
+
 let reconnectTimer = null;
 const RECONNECT_DELAY_MS = 3000;
 // El codigo llego en la URL (el cliente abre el navegador asi, y en el celular

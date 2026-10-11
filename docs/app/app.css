@@ -284,6 +284,7 @@
     max-height: calc(100% - 1.2rem); pointer-events: none;
   }
   .mapLeftControls .mapBtn { position: static; flex-shrink: 0; pointer-events: auto; }
+  #zoomInBtn, #zoomOutBtn { font-size: 1.5rem; font-weight: 600; line-height: 1; }
   #navToggleBtn.active { background: var(--accent); color: #fff; }
   /* 3D: debajo del boton de navegacion, solo visible en modo nav */
   #tilt3dBtn.active { background: var(--accent); color: #fff; }
