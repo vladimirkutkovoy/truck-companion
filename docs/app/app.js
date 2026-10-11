@@ -1317,7 +1317,7 @@ applyButtonPrefs();
 // se acomodan. Lo que se mueve sale de su lugar en el flujo y pasa a colgar
 // del mapa como absoluto; la posicion se guarda en % para que aguante rotar
 // la pantalla o cambiar de tamano la ventana.
-const BTN_GROUP_IDS = ['mapLeftControls', 'topRightBtns'];
+const BTN_GROUP_IDS = ['mapLeftControls', 'topRightBtns', 'zoomControls'];
 // Cuanto hay que mover el dedo para que cuente como arrastre y no como toque.
 const LAYOUT_DRAG_SLOP_PX = 5;
 // Grilla de alineacion: pega las posiciones a multiplos de esto, asi dos

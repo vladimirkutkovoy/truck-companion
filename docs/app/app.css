@@ -284,6 +284,13 @@
     max-height: calc(100% - 1.2rem); pointer-events: none;
   }
   .mapLeftControls .mapBtn { position: static; flex-shrink: 0; pointer-events: auto; }
+  .zoomControls {
+    position: absolute; top: 50%; right: calc(0.6rem + env(safe-area-inset-right, 0px));
+    transform: translateY(-50%); z-index: 1100;
+    display: flex; flex-direction: column; gap: 0.5rem;
+  }
+  .zoomControls .mapBtn { position: static; flex-shrink: 0; }
+  #zoomControls.moved { transform: none; }
   #zoomInBtn, #zoomOutBtn { font-size: 1.5rem; font-weight: 600; line-height: 1; }
   #navToggleBtn.active { background: var(--accent); color: #fff; }
   /* 3D: debajo del boton de navegacion, solo visible en modo nav */
@@ -303,6 +310,9 @@
   }
   #topRightControls .mapBtn { position: static; }
   #topRightBtns { display: flex; flex-direction: column; align-items: flex-end; gap: 0.5rem; }
+  @media (max-height: 500px) and (orientation: landscape) {
+    #topRightControls { right: calc(4rem + env(safe-area-inset-right, 0px)); }
+  }
 
   /* Botones movibles: mientras se acomodan, el grupo entero agarra el puntero
      (los botones no, si no se dispararia la accion al soltarlos) y se marca
