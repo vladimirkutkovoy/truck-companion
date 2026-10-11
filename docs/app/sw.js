@@ -1,16 +1,30 @@
-const CACHE_NAME = 'truckdash-v40';
+const CACHE_NAME = 'truckdash-v146';
 const APP_SHELL = [
   './',
   './index.html',
   './manifest.json',
-  './app.css?v=20260922n',
-  './app.js?v=20260922o',
-  './convoy.js?v=20260922e',
-  './pure.js?v=20260922e',
-  './i18n.js?v=20260922l',
+  './app.css?v=20261011b',
+  './app.js?v=20261011b',
+  './convoy.js?v=20261011b',
+  './livemap.js?v=20261011b',
+  './variants.js?v=20261011b',
+  './pure.js?v=20261011b',
+  './i18n.js?v=20261011b',
+  './i18n_en_es.js?v=20261011b',
+  '../dash/dash.js?v=20261011b',
+  '../dash/dash.css?v=20261011b',
   './assets/icon-192.png',
   './assets/icon-512.png',
+  './vendor/maplibre-gl-4.7.1.js',
+  './vendor/maplibre-gl-4.7.1.css',
+  './vendor/pmtiles-3.2.0.js',
+  './vendor/proj4-2.15.0.js',
 ];
+
+// Lo que se guarda para tener sin red: el sitio y los datos del mapa. El
+// relay no: /health o /version sacados de la cache dicen algo que ya no es
+// cierto.
+const CACHEABLE_ORIGINS = [self.location.origin, 'https://maps.trucksim-dash.com'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -29,14 +43,21 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  if (event.request.method !== 'GET') return;
+  const req = event.request;
+  if (req.method !== 'GET') return;
+  if (!CACHEABLE_ORIGINS.includes(new URL(req.url).origin)) return;
+  // Los tiles del mapa se piden por rango (pmtiles) y llegan como 206, que
+  // la Cache API rechaza: cada tile se clonaba para nada y tiraba un error.
+  if (req.headers.has('range')) return;
   event.respondWith(
-    fetch(event.request)
+    fetch(req)
       .then((response) => {
-        const copy = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        if (response.status === 200) {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(req, copy)).catch(() => {});
+        }
         return response;
       })
-      .catch(() => caches.match(event.request))
+      .catch(() => caches.match(req))
   );
 });

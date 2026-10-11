@@ -1,0 +1,371 @@
+/* Panel de tablero. Lo usa la pagina de docs/dash/ y tambien la app, que lo
+   muestra a pantalla completa sobre el mapa; por eso todo cuelga de
+   .dashRoot y nada toca body ni :root desde aca. */
+
+.dashRoot {
+  /* Todo el panel escala con una sola variable: es un tablero que se mira a
+     distinta distancia segun donde este apoyado el dispositivo, y el control
+     de tamano solo cambia esto. */
+  --d-scale: 1;
+  --d-unit: calc(clamp(12px, 0.55vw + 0.5vh + 7px, 19px) * var(--d-scale));
+  --d-gap: calc(var(--d-unit) * 0.55);
+  --d-panel: #171a1f;
+  --d-line: #272c33;
+  --d-muted: #9aa4b2;
+  --d-accent: #3b9eff;
+  --d-ok: #7cc243;
+  --d-mid: #e8cf3f;
+  --d-warn: #ffb020;
+  --d-bad: #ff4d4d;
+  font-size: var(--d-unit);
+  display: flex;
+  flex-direction: column;
+  gap: var(--d-gap);
+  min-height: 0;
+  color: #eee;
+}
+
+/* --- la cinta: el viaje entero, con el descanso y la carga encima --- */
+.dRibbon {
+  border: 2px solid var(--d-accent);
+  border-radius: 3px;
+  padding: 0.55em 0.9em 0.45em;
+  flex-shrink: 0;
+}
+.dRibbon[hidden] { display: none; }
+.dEnds { display: flex; align-items: flex-end; gap: 1em; }
+.dFrom, .dTo { min-width: 0; flex: 1 1 0; }
+.dTo { text-align: right; }
+.dMiddle { text-align: center; flex-shrink: 0; }
+.dEndCity { font-size: 0.9em; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dEndCityBig { font-size: 1.6em; line-height: 1.05; }
+.dEndSub { font-size: 0.7em; color: var(--d-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dEndSub[hidden], .dEndCity[hidden] { display: none; }
+.dRemaining { font-size: 1.9em; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+
+.dTrack { position: relative; height: 1.1em; margin-top: 0.5em; }
+.dRail { position: absolute; top: 0.4em; left: 0; right: 0; height: 0.3em; background: var(--d-line); border-radius: 1em; }
+.dDone { position: absolute; top: 0.4em; left: 0; width: 0; height: 0.3em; background: var(--d-accent); border-radius: 1em; transition: width 0.4s linear; }
+/* Franja y no punto: no sabemos en que kilometro exacto vas a parar, y un
+   punto prometeria una precision que no tenemos.
+   Una arriba del riel y la otra abajo, en carriles propios: cuando las dos
+   paradas caen cerca se superponian y la de abajo tapaba a la de arriba,
+   que es justo cuando hay que ver que son dos cosas distintas. Separadas
+   no necesitan transparencia para dejar ver el riel, asi que se ven mejor. */
+.dBand { position: absolute; height: 0.22em; border-radius: 1em; opacity: 0.85; }
+.dBand[hidden] { display: none; }
+.dBand-rest { top: 0.08em; background: var(--d-warn); }
+.dBand-fuel { top: 0.8em; background: var(--d-ok); }
+.dTruck {
+  position: absolute; top: 0.05em; width: 1em; height: 1em; border-radius: 50%;
+  background: var(--d-accent); border: 0.18em solid var(--d-panel);
+  transform: translateX(-50%); transition: left 0.4s linear;
+}
+.dMarks { position: relative; height: 1em; font-size: 0.68em; }
+.dMark { position: absolute; white-space: nowrap; }
+.dMark[hidden] { display: none; }
+.dMark-rest { color: var(--d-warn); }
+.dMark-fuel { color: var(--d-ok); }
+
+/* --- grilla --- */
+.dGrid {
+  display: grid;
+  gap: var(--d-gap);
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "drive" "eta" "fuel" "truck" "strip";
+  /* Las filas se estiran para ocupar el alto. Con align-content:start el
+     panel dejaba un cuarto de pantalla en negro abajo, en vertical y en
+     apaisado: un tablero con la pantalla a medio usar parece sin
+     terminar. Cuando el contenido no entra, el overflow lo resuelve. */
+  align-content: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+/* Sin viaje no hay tarjeta de llegada. Si la fila la sigue nombrando, el
+   lugar queda reservado y vacio; el resto se corre y ocupa el ancho. */
+.dGrid.sinViaje { grid-template-areas: "drive" "fuel" "truck" "strip"; }
+.dCard {
+  background: var(--d-panel);
+  border-radius: 3px;
+  /* El contenido queda agrupado arriba y es el MARCO el que se estira
+     para llenar el alto (ver align-content en .dGrid). Repartirlo con
+     space-between separaba tres lineas a lo largo de media pantalla y la
+     tarjeta se leia desarmada. */
+  padding: 0.6em 0.75em;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45em;
+  min-width: 0;
+}
+.dCardHead { display: flex; justify-content: space-between; align-items: center; }
+.dCardTitle { font-size: 0.7em; color: var(--d-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.dReset {
+  background: none; border: 1px solid var(--d-line); color: var(--d-muted);
+  border-radius: 2px; font-size: 0.68em; padding: 0.15em 0.6em; cursor: pointer;
+}
+.dReset:hover { color: #eee; border-color: var(--d-muted); }
+
+/* Dos columnas en cuanto hay lugar; la conduccion ocupa el ancho entero
+   porque la velocidad es lo unico que se mira de reojo manejando. */
+@media (min-width: 34rem) {
+  .dGrid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas: "drive drive" "eta fuel" "truck truck" "strip strip";
+  }
+  .dGrid.sinViaje { grid-template-areas: "drive drive" "fuel fuel" "truck truck" "strip strip"; }
+}
+/* Vertical grande: el mismo problema que en apaisado, pero a nivel pagina.
+   Con la formula comun una tablet de 1024x1366 se quedaba en el tope de
+   19 px y el tablero ocupaba la mitad de arriba de la pantalla. Aca la
+   unidad tambien sale del alto, con un techo por ancho: en vertical las
+   columnas son angostas y si se agranda de mas el texto envuelve, la
+   pagina crece y termina desbordando en vez de llenarse. Va ANTES del
+   bloque apaisado para que a 5/4 justo mande el de apaisado.
+   Los telefonos (menos de 34rem, una sola columna) no entran aca: ya
+   venian usando el 78-86 % del alto. */
+@media (min-width: 34rem) and (max-aspect-ratio: 5/4) {
+  .dashRoot { --d-unit: calc(clamp(13.5px, min(2.1vh, 2.9vw), 40px) * var(--d-scale)); }
+}
+/* En vertical las tres columnas de la cinta son angostas y el renglon de
+   abajo se comia la hora de llegada con puntos suspensivos. Aca envuelve:
+   en vertical el alto es lo que sobra, y perder el dato es peor que una
+   cinta un poco mas alta. En apaisado sigue recortando, que ahi el alto es
+   justo lo que falta. */
+@media (max-aspect-ratio: 5/4) {
+  .dEndSub { white-space: normal; overflow: visible; overflow-wrap: break-word; }
+  /* El nombre de la ciudad tambien envuelve, pero hasta dos renglones: es
+     el texto mas grande de la cinta y "Klagenfurt am Worthersee" en una
+     columna angosta se comia cuatro. */
+  .dEndCity {
+    white-space: normal; overflow-wrap: break-word; overflow: hidden;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
+}
+/* Cuatro columnas cuando la pantalla es ancha Y baja. El corte mira la
+   proporcion y no solo el ancho: un telefono apaisado mide 844x390, que en
+   rem es "angosto" pero tiene 390 px de alto y en dos columnas no entra
+   nada; una tablet vertical de 1024x1366 es mas ancha en rem y ahi cuatro
+   columnas desperdiciarian todo el alto. */
+@media (min-width: 52rem) and (min-aspect-ratio: 5/4) {
+  /* Aca el alto es lo que aprieta: una sola fila de tarjetas, la cinta
+     arriba y la franja abajo. Por eso la unidad sale del alto de la
+     pantalla y no del ancho, que sobra. Con la formula comun un monitor de
+     1080 se quedaba en el tope de 19 px y el tablero ocupaba un tercio de
+     la pantalla, con las tarjetas vacias por dentro. */
+  .dashRoot { --d-unit: calc(clamp(13.5px, 3vh, 40px) * var(--d-scale)); }
+  .dGrid {
+    grid-template-columns: 1.15fr repeat(3, minmax(0, 1fr));
+    grid-template-areas: "drive eta fuel truck" "strip strip strip strip";
+    /* Las tarjetas miden lo que mide lo que dicen. Estirarlas dejaba el
+       texto arriba y un pozo negro abajo dentro de cada una; el hueco que
+       sobra va una sola vez, entre las tarjetas y la franja. */
+    grid-template-rows: auto auto;
+    align-content: space-between;
+  }
+  .dGrid.sinViaje {
+    grid-template-columns: 1.15fr minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas: "drive fuel truck" "strip strip strip";
+  }
+  .dEndCityBig { font-size: 2em; }
+}
+/* Monitor: la sesion y el vehiculo dejan de compartir columna. */
+@media (min-width: 95rem) and (min-aspect-ratio: 5/4) {
+  .dGrid {
+    grid-template-columns: 1.3fr repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* --- conduccion --- */
+/* Se permite que la marcha caiga abajo: con el tablero grande en una
+   ventana angosta, velocidad + limite + marcha no entran en un renglon
+   y antes el bloque de la marcha se salia de la tarjeta. */
+.dSpeedRow { display: flex; align-items: center; gap: 0.6em; flex-wrap: wrap; max-width: 22em; }
+.dSpeed { font-size: 3.1em; font-weight: 600; line-height: 0.95; font-variant-numeric: tabular-nums; }
+.dSpeedUnit { font-size: 0.68em; color: var(--d-muted); }
+.dLimit {
+  width: 2.6em; height: 2.6em; border-radius: 50%;
+  background: #fff; color: #111; border: 0.28em solid var(--d-bad);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1em; font-weight: 700; flex-shrink: 0;
+}
+.dLimit-off { opacity: 0.25; }
+.dLimit-over { box-shadow: 0 0 0 0.25em rgba(255, 77, 77, 0.35); }
+.dGearBox { margin-left: auto; text-align: right; min-width: 4.5em; }
+.dGear { font-size: 1.5em; font-weight: 600; line-height: 1; }
+.dCruise { font-size: 0.75em; color: var(--d-ok); }
+.dCruise[hidden] { display: none; }
+.dRpm { height: 0.28em; background: var(--d-line); border-radius: 1em; margin-top: 0.3em; }
+.dRpmBar { display: block; height: 100%; width: 0; background: var(--d-accent); border-radius: 1em; }
+.dRpmBar.dRpm-high { background: var(--d-bad); }
+
+/* Rejilla y no flujo libre: asi los iconos caen en columnas parejas y el
+   renglon incompleto queda alineado con los de arriba. */
+.dIndicators { display: grid; grid-template-columns: repeat(auto-fit, minmax(1.9em, 1fr)); gap: 0.3em; justify-items: center; }
+.dInd {
+  width: 1.9em; height: 1.9em; border-radius: 2px;
+  display: flex; align-items: center; justify-content: center;
+  background: #10131700; border: 1px solid var(--d-line);
+  color: #565d68;
+}
+.dInd[hidden] { display: none; }
+.dInd svg { width: 1.2em; height: 1.2em; }
+.dInd.on { color: var(--d-accent); border-color: var(--d-accent); background: rgba(59, 158, 255, 0.14); }
+.dInd-beamHigh.on, .dInd-parking.on { color: #6fb7ff; }
+.dInd-hazards.on, .dInd-parkingBrake.on { color: var(--d-bad); border-color: var(--d-bad); background: rgba(255, 77, 77, 0.14); }
+.dInd-beacon.on { color: var(--d-warn); border-color: var(--d-warn); background: rgba(255, 176, 32, 0.14); }
+/* Los guinos parpadean de verdad: apagado y encendido no alcanzan para algo
+   que en el camion siempre se mueve. */
+.dInd-blinkerLeft.on, .dInd-blinkerRight.on {
+  color: var(--d-ok); border-color: var(--d-ok); background: rgba(124, 194, 67, 0.14);
+  animation: dBlink 0.7s steps(1, end) infinite;
+}
+@keyframes dBlink { 50% { opacity: 0.25; } }
+/* El retarder muestra en que paso esta: "2" solo no dice si es de tres o
+   de cinco. */
+.dInd-retarder { position: relative; }
+.dInd-retarder[data-level]::after {
+  content: attr(data-level);
+  position: absolute; bottom: -0.15em; right: -0.15em;
+  font-size: 0.5em; background: var(--d-accent); color: #04223f;
+  border-radius: 2px; padding: 0 0.3em; font-weight: 700;
+}
+
+/* --- filas etiqueta/valor --- */
+.dRows { display: flex; flex-direction: column; }
+.dRow {
+  display: flex; justify-content: space-between; gap: 0.6em;
+  font-size: 0.85em; padding: 0.18em 0; border-top: 1px solid var(--d-line);
+}
+.dRow[hidden] { display: none; }
+.dRows .dRow:first-child { border-top: none; }
+.dLabel { color: var(--d-muted); white-space: nowrap; }
+.dValue { font-variant-numeric: tabular-nums; text-align: right; }
+.dRow.alerta .dValue { color: var(--d-bad); font-weight: 600; }
+
+.dBig { margin-bottom: 0.1em; }
+.dBigValue { font-size: 1.35em; font-weight: 600; line-height: 1.15; }
+.dBigSub { font-size: 0.72em; color: var(--d-muted); }
+.dBigSub:empty { display: none; }
+.dPay { font-size: 1.25em; font-weight: 600; margin-top: 0.25em; }
+.dPay:empty { display: none; }
+
+.dVerdict { font-size: 0.8em; font-weight: 600; }
+.dVerdict[hidden] { display: none; }
+.dVerdict.bien { color: var(--d-ok); }
+.dVerdict.mal { color: var(--d-warn); }
+
+/* --- medidores --- */
+/* Tres columnas si entran; si no, las que entren. Con "132 psi" en una
+   sola linea, tres columnas fijas cortaban el numero en las pantallas
+   mas chicas. */
+/* El minimo es lo que mide "132 psi" y nada mas: con 4,2 em una tarjeta
+   se quedaba en UNA columna y los seis medidores ocupaban seis
+   renglones: es lo que desbordaba la tarjeta del camion en una tablet
+   apaisada. */
+.dGauges { display: grid; grid-template-columns: repeat(auto-fit, minmax(3.9em, 1fr)); gap: 0.35em; margin-top: 0.2em; }
+.dGauge { min-width: 0; }
+.dGauge[hidden] { display: none; }
+/* Numero y unidad no se separan: con el tablero grande "132 psi" partia
+   el renglon y quedaba el 132 arriba del psi. */
+.dGaugeValue { font-size: 0.95em; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dGaugeLabel { font-size: 0.64em; color: var(--d-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dGauge.alerta .dGaugeValue { color: var(--d-bad); }
+
+
+
+/* --- las afirmaciones: primero la conclusion, despues lo que la sostiene --- */
+.dClaim { font-size: 1.15em; font-weight: 600; line-height: 1.2; margin-bottom: 0.3em; }
+.dSecondClaim { font-size: 0.85em; font-weight: 600; margin-bottom: 0.3em; }
+.dClaim[hidden], .dSecondClaim[hidden], .dLine[hidden], .dStripBig[hidden] { display: none; }
+.dClaim.bien, .dSecondClaim.bien { color: var(--d-ok); }
+.dClaim.mal, .dSecondClaim.mal { color: var(--d-warn); }
+.dLine { font-size: 0.78em; color: var(--d-muted); }
+.dLine.dDim { color: #565d68; }
+.dLine.alerta { color: var(--d-bad); }
+.dCard[hidden] { display: none; }
+
+/* --- la franja de abajo --- */
+.dStrip {
+  background: var(--d-panel); border-radius: 3px; padding: 0.5em 0.9em;
+  display: flex; align-items: center; gap: 0.9em; flex-wrap: wrap;
+}
+.dStripCargo { min-width: 0; }
+.dStripCargo[hidden] { display: none; }
+.dStripBig { font-size: 1em; font-weight: 600; }
+/* Los numeros se quedan con el lugar del medio y envuelven entre ellos: si
+   empujaran al boton, el boton se caia a un renglon propio y quedaba solo
+   abajo a la izquierda. El boton se ancla a la derecha el, no ellos, asi
+   que sin carga los numeros arrancan a la izquierda solos. */
+.dStrip .dMetrics { display: flex; gap: 0.35em 0.9em; flex: 1 1 auto; flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
+.dStrip .dReset { flex-shrink: 0; margin-left: auto; }
+.dMetric { min-width: 0; }
+.dMetricValue { font-size: 1.05em; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dMetricLabel { font-size: 0.64em; color: var(--d-muted); white-space: nowrap; }
+
+/* Las barras de desgaste van juntas en una fila: cinco numeros al lado de
+   cinco etiquetas era una planilla. La afirmacion de arriba dice cual es la
+   peor, que es lo unico que hay que saber de un vistazo. */
+/* Cada pieza en su marco, con su nombre y su numero. Tantas por renglon
+   como entren: en una columna angosta caen de a dos. */
+/* Cada marco mide lo que dice y se acomodan solos. Con una grilla de
+   columnas iguales hay que elegir entre columnas anchas (un marco por
+   renglon en apaisado, y la tarjeta se pasa de alto) o angostas (entran,
+   pero "Transmision" se recorta en todas las pantallas). Midiendo cada
+   uno por su cuenta entran los que entren en cada renglon, sin recortar
+   ninguno: en vertical son dos renglones y en apaisado cuatro. */
+.dWearRow { display: flex; flex-wrap: wrap; gap: 0.2em; margin-bottom: 0.35em; }
+.dWearRow[hidden] { display: none; }
+/* El remolque comparte la grilla con el camion, no abre una segunda. Se
+   distingue por el gris, como antes se distinguia la fila. */
+.dWearRow-trailer { display: contents; }
+.dWearRow-trailer[hidden] { display: none; }
+.dWearIcon {
+  width: 0.85em; height: 0.85em; flex-shrink: 0; vertical-align: -0.1em;
+  margin-right: 0.25em; color: var(--d-muted);
+}
+/* Nombre y numero en la misma linea, y el marco lo mas bajo posible: con
+   remolque son ocho, y en la grilla de cuatro columnas la tarjeta tiene
+   unos diez em de ancho y el alto justo. Apilar el nombre arriba del
+   numero no recortaba ninguno, pero duplicaba el alto de la fila y la
+   tarjeta se pasaba en las pantallas mas chicas. */
+.dWear {
+  display: flex; align-items: baseline; gap: 0.35em; max-width: 100%;
+  border: 1px solid var(--d-line); border-radius: 2px; padding: 0.05em 0.35em; min-width: 0;
+}
+.dWear[hidden] { display: none; }
+.dWearName {
+  font-size: 0.62em; color: var(--d-muted);
+  display: flex; align-items: center; min-width: 0;
+}
+.dWearName > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* El color lo lleva el numero: es el dato, y asi la fila no se vuelve un
+   semaforo de cinco marcos de colores. */
+.dWearPct { font-size: 0.78em; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dWearPct.bien { color: var(--d-ok); }
+.dWearPct.medio { color: var(--d-mid); }
+.dWearPct.alto { color: var(--d-warn); }
+.dWearPct.mal { color: var(--d-bad); }
+
+/* El ancho de la tarjeta del camion, medido en em, sale de la proporcion
+   de la pantalla y no de sus pixeles: son cuatro columnas y la unidad es
+   3vh, asi que da unos 8 em por cada punto de proporcion. En 16:9 son
+   catorce em y los ocho marcos entran midiendo cada uno lo que dice; en
+   4:3 son once y no entran: ahi van en columnas iguales, de a dos, con el
+   nombre recortado, que es el unico modo de que las ocho piezas entren en
+   el alto que hay. Esa banda -de 5/4 a 8/5- es la unica que recorta:
+   monitores, telefonos apaisados y todo lo vertical muestran el nombre
+   entero.
+   Va al final del archivo a proposito: pisa la regla general, que en el
+   orden del documento viene despues. */
+@media (min-width: 52rem) and (min-aspect-ratio: 5/4) and (max-aspect-ratio: 8/5) {
+  .dWearRow { display: grid; grid-template-columns: repeat(auto-fit, minmax(4.2em, 1fr)); }
+}
+
+/* Todavia no llego telemetria. Decirlo es mejor que el esqueleto con
+   guiones, que parece roto en vez de parecer que falta el juego. */
+.dWaiting {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  color: var(--d-muted); font-size: 1em; text-align: center; padding: 1em;
+}
+.dWaiting[hidden] { display: none; }

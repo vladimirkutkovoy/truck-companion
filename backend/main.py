@@ -144,6 +144,189 @@ def _save_stats():
         logging.exception("Failed to persist session stats to R2")
 
 
+# Mapas que no conocemos: la web reporta cuando el camion queda fuera de la
+# caja del mapa de su variante (un mod de mapa sin variante, como los de
+# Sudamerica para ETS2), con los nombres de los mods activos. Se acumula por
+# variante: cuantos reportes, la zona (caja de las posiciones) y cuantas
+# veces aparece cada mod. El mod de mapa sale arriba solo. Sin codigo de
+# emparejamiento ni nada que identifique a la persona.
+OFFMAP_MODS_PER_REPORT = 150
+OFFMAP_MOD_NAME_LEN = 80
+OFFMAP_MODS_KEPT = 300
+
+
+def clean_map_dlcs(valor) -> Optional[dict]:
+    """Los DLC de mapa que el cliente encontro en la carpeta del juego
+    ({'ats': ['co', ...], 'ets2': [...]}). Se guardan con el estado de la
+    sesion para que una pestana que abre despues tambien los reciba (si no,
+    hasta el proximo cambio del cliente no se enteraba). Solo ids cortos y
+    pocos: el relay no confia en lo que llega."""
+    if not isinstance(valor, dict):
+        return None
+    limpio = {}
+    for game in ("ats", "ets2"):
+        lista = valor.get(game)
+        if isinstance(lista, list):
+            limpio[game] = sorted({x for x in lista if isinstance(x, str) and re.fullmatch(r"[a-z]{2,12}", x)})[:40]
+    return limpio or None
+
+
+MAP_MOD_FLAG_RE = re.compile(r"^[a-z0-9_]{1,32}$")
+MAP_MOD_FLAGS_MAX = 32
+
+
+def clean_map_mods(valor) -> Optional[dict]:
+    """Los mods de mapa que el cliente detecto, por juego ({'ats': {'c2c':
+    True, ...} o None, 'ets2': ...}). Se guardan con el estado de la sesion
+    como los DLC: el cliente solo reenvia client_status cuando algo cambia,
+    asi que una pestana que abria o recargaba despues cargaba el mapa base
+    y el que jugaba con Coast to Coast veia "ciudad no encontrada"
+    (auditoria del 10-10). Solo banderas cortas y booleanas, nunca nombres
+    de mods."""
+    if not isinstance(valor, dict):
+        return None
+    limpio = {}
+    for game in ("ats", "ets2"):
+        flags = valor.get(game)
+        if isinstance(flags, dict):
+            limpio[game] = {k: bool(v) for k, v in list(flags.items())[:MAP_MOD_FLAGS_MAX]
+                            if isinstance(k, str) and MAP_MOD_FLAG_RE.fullmatch(k)}
+        else:
+            limpio[game] = None
+    return limpio
+
+
+def clean_local_maps(valor) -> Optional[dict]:
+    """Mapas armados en la PC del cliente ("Build my map"): por juego, la
+    variante, la huella, cuando y cuantas ciudades. La web los lee del
+    servidor local del cliente; aca solo se guardan para la pestana que abre
+    despues. Igual que con los DLC, no se confia en lo que llega."""
+    if not isinstance(valor, dict):
+        return None
+    limpio = {}
+    for game in ("ats", "ets2"):
+        m = valor.get(game)
+        if not isinstance(m, dict) or m.get("variant") != f"local_{game}":
+            continue
+        huella = m.get("fingerprint")
+        if not isinstance(huella, str) or not re.fullmatch(r"[0-9a-f]{6,16}", huella):
+            continue
+        mods = m.get("mods") if isinstance(m.get("mods"), list) else []
+        limpio[game] = {
+            "variant": f"local_{game}",
+            "fingerprint": huella,
+            "built": str(m.get("built") or "")[:20],
+            "cities": m.get("cities") if isinstance(m.get("cities"), int) else None,
+            "mods": [x[:80] for x in mods if isinstance(x, str)][:40],
+        }
+    return limpio or None
+
+
+def clean_port(valor) -> Optional[int]:
+    return valor if isinstance(valor, int) and 1024 <= valor <= 65535 else None
+
+
+def clean_offmap_report(payload: dict) -> Optional[dict]:
+    variant = payload.get("variant")
+    if not isinstance(variant, str) or not LIVE_MAP_VARIANT_RE.match(variant):
+        return None
+    try:
+        x, z = float(payload.get("x")), float(payload.get("z"))
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(x) and math.isfinite(z)):
+        return None
+    mods = payload.get("mods")
+    nombres = None
+    if isinstance(mods, list):
+        nombres = []
+        for m in mods[:OFFMAP_MODS_PER_REPORT]:
+            if isinstance(m, str):
+                n = " ".join(m.split())[:OFFMAP_MOD_NAME_LEN]
+                if n and n not in nombres:
+                    nombres.append(n)
+    return {"variant": variant, "x": round(x), "z": round(z), "mods": nombres}
+
+
+def record_offmap_report(report: dict):
+    with _stats_lock:
+        stats = _load_stats()
+        todo = stats.setdefault("offmap", {})
+        v = todo.setdefault(report["variant"], {"reports": 0, "noMods": 0, "box": None, "mods": {}})
+        v["reports"] += 1
+        v["last"] = time.strftime("%Y-%m-%d", time.gmtime())
+        x, z = report["x"], report["z"]
+        b = v.get("box")
+        v["box"] = [x, x, z, z] if not b else [min(b[0], x), max(b[1], x), min(b[2], z), max(b[3], z)]
+        if report["mods"] is None:
+            v["noMods"] += 1
+        else:
+            for n in report["mods"]:
+                v["mods"][n] = v["mods"].get(n, 0) + 1
+            if len(v["mods"]) > OFFMAP_MODS_KEPT:
+                # los que aparecen una vez y nada mas son ruido (camiones, sonidos)
+                v["mods"] = dict(sorted(v["mods"].items(), key=lambda kv: -kv[1])[:OFFMAP_MODS_KEPT])
+        _save_stats()
+
+
+# Empresas de trabajos que no estan en los POIs de la variante (la web las
+# detecta, ver createMissingCompanyWatch en docs/app/pure.js), con la posicion
+# donde se cargo o se entrego: es el lugar real de la empresa. Una vez por
+# empresa y sesion; se guardan con las stats y se ven en admin.html.
+GAME_TOKEN_RE = re.compile(r"^[a-z0-9_]{1,32}$")
+MISSING_COMPANIES_KEPT = 500
+MISSING_COMPANY_POINTS = 5
+MISSING_COMPANY_PER_SESSION = 20
+
+
+def _nombre_corto(valor) -> Optional[str]:
+    if not isinstance(valor, str):
+        return None
+    n = " ".join(valor.split())[:60]
+    return n or None
+
+
+def clean_missing_company(payload: dict) -> Optional[dict]:
+    variant, company, city = payload.get("variant"), payload.get("company"), payload.get("city")
+    if not isinstance(variant, str) or not LIVE_MAP_VARIANT_RE.match(variant) or variant.startswith("local"):
+        return None
+    if not all(isinstance(v, str) and GAME_TOKEN_RE.match(v) for v in (company, city)):
+        return None
+    if payload.get("kind") not in ("pickup", "dest"):
+        return None
+    try:
+        x, z = float(payload.get("x")), float(payload.get("z"))
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(x) and math.isfinite(z) and abs(x) < 1e7 and abs(z) < 1e7):
+        return None
+    return {"variant": variant, "company": company, "city": city, "kind": payload["kind"],
+            "companyName": _nombre_corto(payload.get("companyName")), "cityName": _nombre_corto(payload.get("cityName")),
+            "x": round(x), "z": round(z)}
+
+
+def record_missing_company(report: dict):
+    with _stats_lock:
+        stats = _load_stats()
+        todo = stats.setdefault("missing_companies", {})
+        clave = f'{report["variant"]}|{report["company"]}|{report["city"]}'
+        e = todo.get(clave)
+        if e is None:
+            e = todo[clave] = {"variant": report["variant"], "company": report["company"], "city": report["city"],
+                               "reports": 0, "points": []}
+        e["reports"] += 1
+        e["last"] = time.strftime("%Y-%m-%d", time.gmtime())
+        for k in ("companyName", "cityName"):
+            if report.get(k):
+                e[k] = report[k]
+        e["points"] = (e["points"] + [[report["x"], report["z"], report["kind"]]])[-MISSING_COMPANY_POINTS:]
+        if len(todo) > MISSING_COMPANIES_KEPT:
+            # se van las que hace mas que no aparecen
+            for vieja in sorted(todo, key=lambda k: (todo[k].get("last", ""), todo[k]["reports"]))[:len(todo) - MISSING_COMPANIES_KEPT]:
+                del todo[vieja]
+        _save_stats()
+
+
 def record_session_started():
     with _stats_lock:
         stats = _load_stats()
@@ -285,10 +468,10 @@ JOB_DELIVERED_COOLDOWN_SECONDS = 20
 # capa compara contra el ultimo trabajo ya guardado en las stats globales
 # (sobrevive un redeploy, a diferencia del estado en memoria de Session) y
 # lo descarta si es identico y llego dentro de esta ventana.
-# Una hora: el flag jobDelivered del SDK queda en true durante minutos (hasta
+# Seis horas: el flag jobDelivered del SDK queda en true durante minutos (hasta
 # el proximo trabajo), asi que un cliente o backend reiniciado en ese rato
 # vuelve a ver el mismo evento. Dos entregas reales identicas (misma ruta,
-# carga, pago exacto y distancia) en una hora no existen en la practica.
+# carga, pago exacto y distancia) en seis horas no existen en la practica.
 JOB_DEDUPE_WINDOW_SECONDS = 6 * 60 * 60
 
 
@@ -454,6 +637,7 @@ class Session:
         self.client_ws: Optional[WebSocket] = None
         self.viewer_ws_list: list[WebSocket] = []
         self.viewer_outboxes: dict[WebSocket, ViewerOutbox] = {}
+        self.last_tick_error_logged_at = 0.0  # ver el except del bucle de ws_client
         self.counted = False  # ya se sumo al contador historico (una vez por sesion, no por reconexion)
         # Flanco para no contar el mismo evento en cada tick que el flag siga
         # en true. None = todavia no vimos ningun tick de este cliente: el
@@ -477,7 +661,25 @@ class Session:
         # cuentas ni consentimiento granular por usuario.
         self.map_variant: Optional[str] = None
         self.share_position = False
+        # El usuario apago "compartir" a mano (set_live_share con explicit).
+        # share_position es uno por sesion y cada pestana lo reenvia al
+        # (re)conectar con su default local (prendido): sin esto un segundo
+        # dispositivo o una reconexion volvia a publicar la posicion sin que
+        # nadie lo pidiera (auditoria del 10-10).
+        self.share_off_by_user = False
         self.last_position: Optional[dict] = None  # {"x":, "z":, "game":, "ts":}
+        # Apodo opcional (el de convoy) que se muestra en el mapa en vivo
+        # publico; sin apodo el marcador sale anonimo.
+        self.live_nick: Optional[str] = None
+        # Ruta que calculo SU web (opt-in aparte, "compartir tambien mi ruta"),
+        # para dibujarla en el mapa en vivo publico. Viaja aparte de las
+        # posiciones, solo cuando cambia (rev), como la del convoy.
+        self.live_route: Optional[list] = None
+        self.live_route_rev = 0
+        # Variantes para las que esta sesion ya reporto "fuera del mapa":
+        # un reporte por variante y por sesion.
+        self.offmap_reported: set = set()
+        self.missing_companies_reported: set = set()
         # Ultimo estado de diagnostico reportado por el cliente local (mensaje
         # "client_status": waiting_game / plugin_missing / live / ...). Se
         # guarda para poder darselo a un viewer que se conecta despues, en vez
@@ -510,36 +712,87 @@ async def broadcast_live_positions_loop():
     while True:
         await asyncio.sleep(LIVE_POSITIONS_BROADCAST_INTERVAL_SECONDS)
         ticks += 1
+        # Cada uno con su try: si el broadcast fallaba en todos los ticks (una
+        # sesion con datos raros) la limpieza de sesiones no corria nunca
+        # (auditoria del 10-10).
         try:
             broadcast_live_positions()
-            if ticks % 30 == 0:  # cada ~1 min
-                cleanup_expired_sessions()
         except Exception:
             logging.exception("Error en broadcast_live_positions_loop")
+        if ticks % 30 == 0:  # cada ~1 min
+            try:
+                cleanup_expired_sessions()
+            except Exception:
+                logging.exception("Error limpiando sesiones vencidas")
 
 
-def broadcast_live_positions():
-    now = time.time()
-    sharing = [
+def coerce_map_variant(variant: Optional[str], game) -> Optional[str]:
+    """La variante de mapa la elige la web, pero el juego real lo dice la
+    telemetria: si no coinciden (la web mando "ats" antes del primer tick, o
+    el jugador cambio de juego) se cae a la variante base del juego para no
+    mezclar conductores de ETS2 en el mapa de ATS."""
+    if variant and game in ("ats", "ets2") and not variant.startswith(game):
+        return game
+    return variant
+
+
+def sharing_sessions(now: float) -> list["Session"]:
+    """Sesiones que aparecen en el mapa (opt-in + posicion fresca)."""
+    return [
         s for s in sessions.values()
         if s.share_position and s.map_variant and s.last_position
         and now - s.last_position["ts"] <= LIVE_POSITION_STALE_SECONDS
     ]
+
+
+def _decimetro(valor):
+    return round(valor, 1) if isinstance(valor, float) else valor
+
+
+def broadcast_live_positions():
+    now = time.time()
+    sharing = sharing_sessions(now)
+    live_map_broadcast(sharing, now)
     if not sharing:
         return
     by_variant: dict[str, list[Session]] = defaultdict(list)
     for s in sharing:
         by_variant[s.map_variant].append(s)
 
+    # Cada jugador se serializa UNA vez por tick y por variante, se arma la
+    # lista entera una vez, y el mensaje de cada sesion es esa lista con su
+    # propio pedazo recortado (por posicion: es copiar memoria, no recorrer
+    # la lista en Python). Antes se armaban N listas de N dicts y N
+    # json.dumps por tick: con 1000 conductores en el mismo mapa el tick
+    # tardaba ~2 s, cada 2 s, con el event loop tomado (el relay entero
+    # dejaba de reenviar telemetria). La forma del mensaje es la misma: la
+    # web no se entera.
+    por_variante: dict[str, tuple[str, dict[str, tuple[int, int]]]] = {}
+    for variant, group in by_variant.items():
+        lista, lugares, largo = [], {}, 0
+        for s in group:
+            # Al decimetro: la telemetria trae doubles con 15 cifras y cada
+            # mensaje lleva a TODOS los demas, asi que cada digito de mas se
+            # paga N veces por tick. En el mapa no se ve la diferencia.
+            pedazo = json.dumps({"id": s.public_id, "x": _decimetro(s.last_position["x"]),
+                                 "z": _decimetro(s.last_position["z"])})
+            if lista:
+                largo += 2  # el ", " que lo separa del anterior
+            lugares[s.code] = (largo, largo + len(pedazo))
+            largo += len(pedazo)
+            lista.append(pedazo)
+        por_variante[variant] = (", ".join(lista), lugares)
+
     for session in sharing:
         if not session.viewer_ws_list:
             continue
-        peers = [
-            {"id": s.public_id, "x": s.last_position["x"], "z": s.last_position["z"]}
-            for s in by_variant[session.map_variant]
-            if s.code != session.code
-        ]
-        message = json.dumps({"type": "live_players", "players": peers})
+        todos, lugares = por_variante[session.map_variant]
+        desde, hasta = lugares[session.code]
+        if desde == 0:
+            peers = todos[hasta + 2:]          # el primero: se va con el ", " que lo sigue
+        else:
+            peers = todos[:desde - 2] + todos[hasta:]  # los demas: con el ", " que los precede
+        message = '{"type": "live_players", "players": [' + peers + ']}'
         for viewer in list(session.viewer_ws_list):
             asyncio.create_task(_safe_send(viewer, message))
 
@@ -551,10 +804,307 @@ async def _safe_send(ws: WebSocket, message: str):
         pass
 
 
+async def notify_client_viewers(session: "Session"):
+    """Cuantos tableros tiene la sesion, al cliente: con eso no abre otra
+    pestana en cada arranque si ya hay una (o el celular) conectada. Antes
+    abria una por arranque y quedaban varias mandando a la vez (auditoria
+    del 10-10). Un cliente viejo ignora el mensaje."""
+    if session.client_ws is not None:
+        await _safe_send(session.client_ws, json.dumps({"type": "viewers", "count": len(session.viewer_ws_list)}))
+
+
+async def _safe_close(ws: WebSocket, code: int, reason: str):
+    try:
+        await ws.close(code=code, reason=reason)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------- mapa en vivo publico (/live/)
+# Espectadores sin juego ni codigo que miran una variante de mapa entera:
+# reciben, cada LIVE_POSITIONS_BROADCAST_INTERVAL_SECONDS, todos los
+# conductores que comparten posicion en esa variante. Mismo opt-in que "otros
+# jugadores" (un solo toggle en Ajustes, default apagado) y los mismos datos
+# que ya ven los companeros de convoy, sin nada que identifique a la persona
+# salvo el apodo si lo puso.
+LIVE_MAP_MAX_SPECTATORS_PER_VARIANT = 60
+LIVE_MAP_VARIANT_RE = re.compile(r"^[a-z0-9_]{2,40}$")
+LIVE_NICK_MAX_LEN = 24
+
+live_map_spectators: dict[str, dict[WebSocket, ViewerOutbox]] = defaultdict(dict)
+
+
+def clean_live_nick(value) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    nick = " ".join(value.split())[:LIVE_NICK_MAX_LEN]
+    return nick or None
+
+
+def live_map_player(s: "Session") -> dict:
+    sm = s.last_summary or {}
+    return {
+        "id": s.public_id, "x": s.last_position["x"], "z": s.last_position["z"],
+        "heading": sm.get("heading"), "speedKmh": sm.get("speedKmh"), "paused": sm.get("paused", False),
+        "truck": sm.get("truck"), "cargo": sm.get("cargo"),
+        "citySrc": sm.get("citySrc"), "cityDst": sm.get("cityDst"),
+        "distanceKm": sm.get("distanceKm"), "etaSeconds": sm.get("etaSeconds"),
+        "nick": s.live_nick,
+        # 0 = sin ruta compartida; el espectador borra la que tenga.
+        "routeRev": s.live_route_rev if s.live_route else 0,
+    }
+
+
+LIVE_ROUTE_MAX_POINTS = 400
+# El mensaje del overlay en el juego (web -> cliente): cuatro textos cortos.
+NAV_HUD_MAX_BYTES = 2048
+
+
+def clean_live_route(points) -> Optional[list]:
+    """[[x, z], ...] redondeado a metros, hasta LIVE_ROUTE_MAX_POINTS; None
+    si no es una lista de pares numericos con al menos dos puntos."""
+    if not isinstance(points, list):
+        return None
+    out = []
+    for q in points[:LIVE_ROUTE_MAX_POINTS]:
+        if not (isinstance(q, (list, tuple)) and len(q) >= 2):
+            return None
+        try:
+            x, z = float(q[0]), float(q[1])
+        except (TypeError, ValueError):
+            return None
+        if not (math.isfinite(x) and math.isfinite(z)):
+            return None
+        out.append([round(x), round(z)])
+    return out if len(out) >= 2 else None
+
+
+def live_route_message(s: "Session") -> str:
+    return json.dumps({"type": "live_route", "id": s.public_id, "rev": s.live_route_rev,
+                       "points": s.live_route or []})
+
+
+def live_route_push(s: "Session"):
+    """La ruta nueva a los espectadores de su mapa, sin esperar al tick."""
+    if not s.map_variant:
+        return
+    message = live_route_message(s)
+    for outbox in list(live_map_spectators.get(s.map_variant, {}).values()):
+        outbox.push_control(message)
+
+
+def live_map_message(variant: str, sharing: list["Session"]) -> str:
+    players = [live_map_player(s) for s in sharing if s.map_variant == variant]
+    return json.dumps({"type": "live_players", "variant": variant, "players": players})
+
+
+def live_map_broadcast(sharing: list["Session"], now: float):
+    for variant, outboxes in list(live_map_spectators.items()):
+        if not outboxes:
+            live_map_spectators.pop(variant, None)
+            continue
+        message = live_map_message(variant, sharing)
+        for outbox in list(outboxes.values()):
+            outbox.push_telemetry(message)
+
+
+@app.get("/live/summary")
+def live_summary():
+    """Conductores en vivo por variante de mapa (para las tarjetas de /live/)."""
+    now = time.time()
+    counts: dict[str, int] = defaultdict(int)
+    for s in sharing_sessions(now):
+        counts[s.map_variant] += 1
+    return {"variants": dict(counts), "total": sum(counts.values()), "ts": now}
+
+
+@app.websocket("/ws/livemap/{variant}")
+async def ws_live_map(websocket: WebSocket, variant: str):
+    """Espectador del mapa en vivo de una variante. Solo recibe."""
+    client_ip = websocket.client.host if websocket.client else "unknown"
+    if not check_rate_limit(client_ip):
+        await websocket.close(code=4429, reason="demasiados intentos, esperá un minuto")
+        return
+    # Se acepta antes de cerrar, como en ws_viewer: cerrando antes del accept
+    # el navegador ve 1006 sin el codigo y reintenta para siempre en vez de
+    # avisar que el mapa esta lleno (auditoria del 10-10).
+    if not LIVE_MAP_VARIANT_RE.match(variant):
+        await websocket.accept()
+        await websocket.close(code=4404, reason="variante invalida")
+        return
+    if len(live_map_spectators[variant]) >= LIVE_MAP_MAX_SPECTATORS_PER_VARIANT:
+        await websocket.accept()
+        await websocket.close(code=4403, reason="mapa lleno de espectadores")
+        return
+    await websocket.accept()
+    outbox = ViewerOutbox(websocket)
+    live_map_spectators[variant][websocket] = outbox
+    sharing = sharing_sessions(time.time())
+    outbox.push_control(live_map_message(variant, sharing))
+    # Las rutas vigentes de ese mapa: despues solo llegan cuando cambian.
+    for s in sharing:
+        if s.map_variant == variant and s.live_route:
+            outbox.push_control(live_route_message(s))
+    try:
+        while True:
+            await websocket.receive_text()  # no se espera nada del espectador
+    except WebSocketDisconnect:
+        pass
+    finally:
+        live_map_spectators[variant].pop(websocket, None)
+        outbox.close()
+
+
+# --------------------------------------------------------------- eventos TMP
+
+# Convoyes y eventos de TruckersMP. Se piden desde ACA y no desde el
+# navegador por dos razones, y la segunda importa aunque la primera se
+# arregle: su API no manda cabeceras CORS, y asi hacemos una consulta cada
+# diez minutos para todos en vez de una por cada persona que abre la web.
+#
+# Ellos publican "Cache-Control: max-age=60", o sea que cachear esta bien
+# visto; diez minutos es holgado para algo que cambia por hora. La respuesta
+# cruda son 70 KB con veintidos eventos: se recorta a lo que se muestra.
+#
+# **Las horas vienen sin zona y son UTC.** No lo dice la documentacion; lo
+# dice la pagina de cada evento, que rotula "UTC" al lado de la hora
+# (verificado el 27-09-2026). Se marcan explicitamente con Z al reenviarlas
+# para que el navegador no las interprete como hora local, que correria un
+# convoy una o dos horas segun donde este cada uno.
+TMP_EVENTS_URL = "https://api.truckersmp.com/v2/events"
+TMP_EVENTS_TTL_SECONDS = 600
+TMP_EVENTS_TIMEOUT = 10
+# Lo que se muestra de cada evento. Todo lo demas (descripcion, reglas,
+# banners, mapas) se descarta: son la mayor parte de los 70 KB.
+_tmp_events_cache: Optional[dict] = None
+_tmp_events_lock = threading.Lock()
+_tmp_events_refreshing = False
+
+
+def _tmp_hora(valor) -> Optional[str]:
+    """'2026-10-03 17:00:00' -> '2026-10-03T17:00:00Z'."""
+    if not isinstance(valor, str) or len(valor) < 19:
+        return None
+    return valor[:10] + "T" + valor[11:19] + "Z"
+
+
+def _tmp_evento(crudo: dict) -> Optional[dict]:
+    if not isinstance(crudo, dict) or not crudo.get("id"):
+        return None
+    salida = crudo.get("departure") or {}
+    llegada = crudo.get("arrive") or {}
+    servidor = crudo.get("server") or {}
+    asistencia = crudo.get("attendances") or {}
+    return {
+        "id": crudo.get("id"),
+        "name": crudo.get("name"),
+        # Viene "ETS2", "ATS" o "ETS2 - ProMods". Se guarda el juego base
+        # para filtrar y la etiqueta completa para mostrar: filtrar por
+        # igualdad exacta descartaba en silencio los eventos de ProMods.
+        "game": "ats" if (crudo.get("game") or "").upper().startswith("ATS") else "ets2",
+        "game_label": crudo.get("game"),
+        "type": ((crudo.get("event_type") or {}).get("name")),
+        "start_at": _tmp_hora(crudo.get("start_at")),
+        "meetup_at": _tmp_hora(crudo.get("meetup_at")),
+        # La ciudad viene siempre (22 de 22 al probarlo). "location" NO es
+        # un tipo sino el punto de encuentro adentro de la ciudad, en texto
+        # libre: "Slots", "Container Port", "BOZEMAN descanso". Sirve para
+        # mostrarlo, no para decidir nada. Si se puede rutear o no lo decide
+        # la web, que es la que sabe que ciudades tiene en su mapa.
+        "from_city": salida.get("city"),
+        "from_spot": salida.get("location"),
+        "to_city": llegada.get("city"),
+        "to_spot": llegada.get("location"),
+        "server": servidor.get("name"),
+        "language": crudo.get("language"),
+        "dlcs": list((crudo.get("dlcs") or {}).values()) if isinstance(crudo.get("dlcs"), dict) else (crudo.get("dlcs") or []),
+        "confirmed": asistencia.get("confirmed"),
+        "url": "https://truckersmp.com" + (crudo.get("url") or ""),
+    }
+
+
+def _fetch_tmp_events() -> Optional[dict]:
+    try:
+        req = urllib.request.Request(
+            TMP_EVENTS_URL,
+            headers={"User-Agent": "TruckDash/1.0 (+https://trucksim-dash.com)"})
+        with urllib.request.urlopen(req, timeout=TMP_EVENTS_TIMEOUT) as resp:
+            datos = json.loads(resp.read())
+    except Exception as exc:
+        logging.warning(f"tmp events: {exc}")
+        return None
+    if datos.get("error"):
+        logging.warning(f"tmp events: la API respondio error: {datos.get('descriptor')}")
+        return None
+    respuesta = datos.get("response") or {}
+    secciones = {}
+    for clave in ("now", "today", "upcoming", "featured"):
+        lista = respuesta.get(clave)
+        if not isinstance(lista, list):
+            continue
+        secciones[clave] = [e for e in (_tmp_evento(x) for x in lista) if e]
+    if not secciones:
+        return None
+    return {"events": secciones, "fetched_at": time.time()}
+
+
+def _refresh_tmp_events_blocking():
+    global _tmp_events_cache, _tmp_events_refreshing
+    fresh = _fetch_tmp_events()
+    with _tmp_events_lock:
+        _tmp_events_refreshing = False
+        # Si fallo, se conserva lo ultimo bueno: que su API se caiga no tiene
+        # por que vaciarnos la lista.
+        if fresh is not None:
+            _tmp_events_cache = fresh
+
+
+def get_tmp_events() -> Optional[dict]:
+    """Lo cacheado. Si esta vencido se devuelve igual y se refresca aparte,
+    para no colgar el request en una API de terceros."""
+    global _tmp_events_refreshing
+    with _tmp_events_lock:
+        cached = _tmp_events_cache
+        vencido = cached is None or time.time() - cached["fetched_at"] > TMP_EVENTS_TTL_SECONDS
+        if vencido and not _tmp_events_refreshing:
+            _tmp_events_refreshing = True
+            if cached is not None:
+                threading.Thread(target=_refresh_tmp_events_blocking, daemon=True).start()
+    if cached is None:
+        _refresh_tmp_events_blocking()
+        with _tmp_events_lock:
+            cached = _tmp_events_cache
+    return cached
+
+
+@app.get("/tmp/events")
+def tmp_events(response: Response, game: Optional[str] = None):
+    """Eventos de TruckersMP, recortados y cacheados.
+
+    Fuente: https://truckersmp.com — datos publicos de su API, sin
+    autenticacion. Las horas salen en UTC con Z explicita.
+    """
+    # La mitad del TTL: el navegador no vuelve a preguntar todo el tiempo y
+    # aun asi ve un refresco nuevo con poco retraso.
+    response.headers["Cache-Control"] = "public, max-age=300"
+    datos = get_tmp_events()
+    if datos is None:
+        raise HTTPException(status_code=503, detail="tmp events unavailable")
+    secciones = datos["events"]
+    if game:
+        g = game.lower()
+        secciones = {k: [e for e in v if e["game"] == g] for k, v in secciones.items()}
+    return {"events": secciones, "fetched_at": datos["fetched_at"],
+            "source": "https://truckersmp.com"}
+
+
 @app.on_event("startup")
 async def start_background_tasks():
     asyncio.create_task(broadcast_live_positions_loop())
     asyncio.create_task(convoy_tick_loop())
+    # Se precarga para que el primero que abra el mapa en vivo no espere el
+    # ida y vuelta a la API de TruckersMP.
+    asyncio.create_task(asyncio.to_thread(_refresh_tmp_events_blocking))
 
 
 CODE_ALPHABET = string.ascii_uppercase + string.digits
@@ -599,6 +1149,12 @@ def session_state_message(session: "Session") -> str:
         "client_connected": session.client_ws is not None,
         "client_status": session.last_client_status,
     })
+
+
+def live_share_state_message(session: "Session") -> str:
+    """El estado real de "compartir posicion", para que todas las pestanas
+    de la sesion muestren el mismo tilde (es uno solo por sesion)."""
+    return json.dumps({"type": "live_share_state", "enabled": session.share_position})
 
 
 async def broadcast_session_state(session: "Session"):
@@ -673,6 +1229,13 @@ class ConvoyMember:
         self.share_income = False
         self.km = 0.0                           # km "mostrados" recorridos dentro del convoy
         self._last_pos: Optional[tuple] = None
+        # La pestana que manda la ruta y la variante de este miembro (la sesion
+        # puede tener la PC y el celular abiertos). Las demas solo muestran; si
+        # esta se cierra o se recarga, la que quede la reclama (convoy_claim).
+        self.driver_ws: Optional[WebSocket] = None
+
+    def driver_alive(self) -> bool:
+        return self.driver_ws is not None and self.driver_ws in self.session.viewer_outboxes
 
 
 class Convoy:
@@ -687,6 +1250,10 @@ class Convoy:
         self.empty_since: Optional[float] = None
         self.deliveries = 0
         self.nicknames_seen: list = []
+        # km de los que ya se fueron (convoy_leave los suma al sacarlos): el
+        # resumen de Discord se arma despues de que convoy_close saco a todos,
+        # y sin esto salia con 0 km (auditoria del 10-10).
+        self.km_left = 0.0
 
     def member_of(self, session: "Session") -> Optional[ConvoyMember]:
         return self.members.get(session.code)
@@ -752,11 +1319,18 @@ def clean_nickname(value) -> Optional[str]:
 def convoy_broadcast(convoy: Convoy, message: Optional[dict] = None):
     """Manda el estado (o un mensaje puntual) a todos los viewers de todos
     los miembros y a los espectadores. Va por la cola de control de cada
-    ViewerOutbox: en orden, sin pisarse."""
+    ViewerOutbox: en orden, sin pisarse. El estado le dice a cada pestana si
+    es la que maneja el convoy (driver) y si no hay ninguna (driverless)."""
     for m in convoy.members.values():
-        text = json.dumps(message if message is not None else convoy.state_message(m))
-        for outbox in list(m.session.viewer_outboxes.values()):
-            outbox.push_control(text)
+        if message is not None:
+            text = json.dumps(message)
+            for outbox in list(m.session.viewer_outboxes.values()):
+                outbox.push_control(text)
+            continue
+        state = convoy.state_message(m)
+        state["driverless"] = not m.driver_alive()
+        for ws, outbox in list(m.session.viewer_outboxes.items()):
+            outbox.push_control(json.dumps({**state, "driver": ws is m.driver_ws}))
     if convoy.spectators:
         text = json.dumps(message if message is not None else convoy.state_message(None))
         for outbox in list(convoy.spectators.values()):
@@ -777,6 +1351,7 @@ def convoy_leave(session: "Session", kicked: bool = False):
         return
     member = convoy.members.pop(session.code, None)
     if member is not None:
+        convoy.km_left += member.km
         # avisar al que se va (con kicked si corresponde) y al resto
         text = json.dumps({**convoy.state_message(None, kicked=kicked), "left": True})
         for outbox in list(session.viewer_outboxes.values()):
@@ -834,6 +1409,7 @@ def handle_convoy_message(session: "Session", websocket: WebSocket, msg_type: st
             convoy_broadcast(convoy, {"type": "convoy_event", "event": "joined", "nickname": nickname, "id": member.id})
         else:
             member.nickname = nickname  # reconexion de la misma sesion
+        member.driver_ws = websocket  # entrar (o volver a entrar) desde una pestana la hace la que maneja
         member.variant = payload.get("mapVariant") or member.variant
         member.share_income = bool(payload.get("shareIncome"))
         convoy_broadcast(convoy)
@@ -860,6 +1436,21 @@ def handle_convoy_message(session: "Session", websocket: WebSocket, msg_type: st
             if target and target.session.code != session.code:
                 convoy.banned.add(target.session.code)
                 convoy_leave(target.session, kicked=True)
+    elif msg_type == "convoy_claim":
+        # force: la persona toco algo del convoy en esta pestana. Sin force:
+        # la pestana vio driverless y lo pide; si dos lo piden a la vez (la PC y
+        # el celular), gana la primera.
+        if member and (payload.get("force") or not member.driver_alive()):
+            member.driver_ws = websocket
+            convoy_broadcast(convoy)
+    elif msg_type in ("convoy_variant", "convoy_route") and member and member.driver_alive() and member.driver_ws is not websocket:
+        # Otra pestana de la misma sesion: su ruta (vacia si no tenia) pisaba
+        # la de la que maneja y los demas la veian aparecer y desaparecer.
+        pass
+    elif msg_type in ("convoy_variant", "convoy_route") and member and not member.driver_alive():
+        # Sin pestana que maneje (web vieja, sin convoy_claim): la que manda se queda.
+        member.driver_ws = websocket
+        return handle_convoy_message(session, websocket, msg_type, payload)
     elif msg_type == "convoy_variant":
         if member:
             member.variant = payload.get("mapVariant") or member.variant
@@ -895,7 +1486,7 @@ def post_convoy_summary(convoy: Convoy):
         return
     try:
         duration = max(0, time.time() - convoy.created_at)
-        km = sum(m.km for m in convoy.members.values()) + getattr(convoy, "km_left", 0.0)
+        km = sum(m.km for m in convoy.members.values()) + convoy.km_left
         names = ", ".join(dict.fromkeys(convoy.nicknames_seen)) or "-"
         embed = {
             "title": f"Convoy {convoy.code}",
@@ -927,9 +1518,9 @@ def convoy_tick():
                         m.km += d * GAME_DISTANCE_SCALE.get(s.get("game"), 20.0) / 1000
                 m._last_pos = (s["x"], s["z"])
         # miembros cuya sesion murio (cliente cerrado hace mucho) se van solos
+        # (sus km los suma convoy_leave, una sola vez)
         for code, m in list(convoy.members.items()):
             if code not in sessions:
-                convoy.km_left = getattr(convoy, "km_left", 0.0) + m.km
                 convoy_leave(m.session)
         if not convoy.members:
             if convoy.empty_since is None:
@@ -958,10 +1549,15 @@ async def ws_convoy_spectator(websocket: WebSocket, code: str):
         return
     code = valid_convoy_code(code)
     convoy = convoys.get(code) if code else None
+    # Accept y despues close, como en ws_viewer: sin el accept el navegador
+    # ve 1006 sin el codigo y reintenta para siempre un convoy que ya
+    # termino (auditoria del 10-10).
     if convoy is None:
+        await websocket.accept()
         await websocket.close(code=4404, reason="convoy inexistente o terminado")
         return
     if len(convoy.spectators) >= CONVOY_MAX_SPECTATORS:
+        await websocket.accept()
         await websocket.close(code=4403, reason="convoy lleno de espectadores")
         return
     await websocket.accept()
@@ -1026,6 +1622,11 @@ def version():
         # SHA-256 del zip del release (publicado junto al release). El cliente
         # lo verifica antes de auto-actualizarse; si no esta, actualiza igual.
         "sha256": stats.get("latest_client_sha256"),
+        # Interruptor de las cuentas en los clientes (1.5.27+). Prendido salvo
+        # que se apague con /admin/stats/seed {"accounts_enabled": false}:
+        # asi un problema con las cuentas se corta en todas las PCs sin sacar
+        # otra version. El cliente lo consulta al arrancar y cada 30 minutos.
+        "accounts": stats.get("accounts_enabled", True) is not False,
     }
 
 
@@ -1081,6 +1682,11 @@ def stats_seed(payload: dict, x_admin_key: Optional[str] = Header(default=None))
                 stats[key] = value[:LATEST_JOBS_MAX]
             elif key in ("latest_client_version", "latest_client_sha256") and isinstance(value, str):
                 stats[key] = value
+            elif key == "accounts_enabled" and isinstance(value, bool):
+                stats[key] = value
+            elif key == "missing_companies" and isinstance(value, dict):
+                # {} borra la lista (despues de actualizar los datos del mapa)
+                stats[key] = value
         _save_stats()
         return stats
 
@@ -1111,7 +1717,16 @@ async def ws_client(websocket: WebSocket, code: str):
         logging.info("Sesion %s recreada por reconexion del cliente", code)
 
     await websocket.accept()
+    # Si quedo una conexion anterior del cliente (corte que el servidor
+    # todavia no detecto, o el .exe abierto dos veces) se cierra: antes se
+    # pisaba sin cerrar y, cuando esa vieja moria, su finally dejaba la
+    # sesion sin cliente aunque el nuevo siguiera conectado (auditoria del
+    # 10-10). En una task aparte: un close a una conexion medio muerta
+    # puede esperar el handshake de cierre varios segundos.
+    anterior = session.client_ws
     session.client_ws = websocket
+    if anterior is not None and anterior is not websocket:
+        asyncio.create_task(_safe_close(anterior, 4409, "replaced"))
     session.last_seen = time.time()
     if not session.counted:
         session.counted = True
@@ -1119,6 +1734,7 @@ async def ws_client(websocket: WebSocket, code: str):
         # event loop (que en paralelo esta reenviando telemetria a viewers).
         asyncio.create_task(asyncio.to_thread(record_session_started))
     await broadcast_session_state(session)
+    await notify_client_viewers(session)
     try:
         while True:
             data = await websocket.receive_text()
@@ -1130,7 +1746,19 @@ async def ws_client(websocket: WebSocket, code: str):
             try:
                 payload = json.loads(data)
                 if payload.get("type") == "client_status":
-                    session.last_client_status = {"status": payload.get("status"), "game": payload.get("game"), "clientVersion": payload.get("clientVersion")}
+                    # Todo lo que la web lee del client_status tiene que estar
+                    # aca: una pestana que abre despues solo ve esto (el
+                    # cliente no lo reenvia si nada cambia). "detail" faltaba
+                    # y el tablero abierto despues no decia en que carpeta
+                    # faltaba el plugin. test_contrato_client_status lo cuida.
+                    detail = payload.get("detail")
+                    session.last_client_status = {"status": payload.get("status"), "game": payload.get("game"), "clientVersion": payload.get("clientVersion"),
+                                                  "detail": detail[:400] if isinstance(detail, str) and detail else None,
+                                                  "mapDlcs": clean_map_dlcs(payload.get("mapDlcs")),
+                                                  "mapMods": clean_map_mods(payload.get("mapMods")),
+                                                  "localMaps": clean_local_maps(payload.get("localMaps")),
+                                                  "localMapPort": clean_port(payload.get("localMapPort")),
+                                                  "overlay": payload.get("overlay") is True}
                 # Mensajes de control (client_status, etc.) no son telemetria:
                 # no deben tocar el flanco de jobDelivered. Antes el primer
                 # client_status de cada conexion dejaba el estado en False y el
@@ -1150,6 +1778,13 @@ async def ws_client(websocket: WebSocket, code: str):
                 if pos.get("x") is not None and pos.get("z") is not None:
                     session.last_position = {"x": pos["x"], "z": pos["z"], "ts": now}
                 session.last_summary = summarize_for_convoy(payload, session.last_summary, now)
+                # La variante de mapa la elige la web (set_live_share), pero la
+                # telemetria es la que sabe de verdad en que juego esta el
+                # camion: si no coinciden (la web mando "ats" antes de recibir
+                # el primer tick, o el juego cambio), se corrige a la variante
+                # base del juego real para no mezclar conductores de ETS2 en
+                # el mapa de ATS.
+                session.map_variant = coerce_map_variant(session.map_variant, payload.get("game"))
                 if session.convoy_code and job_delivered and session.last_job_delivered is False:
                     convoy = convoys.get(session.convoy_code)
                     if convoy:
@@ -1197,15 +1832,24 @@ async def ws_client(websocket: WebSocket, code: str):
                     asyncio.create_task(asyncio.to_thread(record_job_delivered, job_info))
                 session.last_job_delivered = job_delivered
             except Exception:
-                pass
+                # Antes era un pass: un error aca (resumen, convoy, conteo de
+                # entregas) se perdia en cada tick sin rastro. Como mucho una
+                # vez por minuto por sesion, para no llenar el log a 4 Hz.
+                ahora = time.time()  # now puede no existir: el error pudo ser antes
+                if ahora - session.last_tick_error_logged_at > 60:
+                    session.last_tick_error_logged_at = ahora
+                    logging.exception("Error procesando la telemetria de %s", code)
             for outbox in list(session.viewer_outboxes.values()):
                 outbox.push_telemetry(data)
     except WebSocketDisconnect:
         pass
     finally:
-        session.client_ws = None
         session.last_seen = time.time()
-        await broadcast_session_state(session)
+        # Solo si sigue siendo la conexion vigente: una vieja reemplazada no
+        # tiene que borrar ni anunciar como desconectado al cliente nuevo.
+        if session.client_ws is websocket:
+            session.client_ws = None
+            await broadcast_session_state(session)
 
 
 @app.websocket("/ws/live/{code}")
@@ -1218,6 +1862,12 @@ async def ws_viewer(websocket: WebSocket, code: str):
 
     session = sessions.get(code)
     if session is None:
+        # Se acepta y recien despues se cierra: si se cierra antes del accept,
+        # el handshake se rechaza y el WebSocket del navegador reporta 1006
+        # sin el codigo, asi que la web no podia distinguir "codigo invalido"
+        # de "se corto la conexion" (y el link guardado del celular no sabia
+        # que solo faltaba abrir el cliente en la PC).
+        await websocket.accept()
         await websocket.close(code=4404, reason="codigo de pairing invalido o expirado")
         return
 
@@ -1226,6 +1876,10 @@ async def ws_viewer(websocket: WebSocket, code: str):
     session.viewer_outboxes[websocket] = ViewerOutbox(websocket)
     session.last_seen = time.time()
     await _safe_send(websocket, session_state_message(session))
+    # El estado real de "compartir": un dispositivo recien abierto arranca
+    # con su default local y si no se lo decimos muestra otra cosa.
+    await _safe_send(websocket, live_share_state_message(session))
+    await notify_client_viewers(session)
     try:
         while True:
             # Normalmente no esperamos nada del viewer (solo mantiene viva la
@@ -1242,7 +1896,13 @@ async def ws_viewer(websocket: WebSocket, code: str):
             try:
                 payload = json.loads(data)
                 msg_type = payload.get("type")
-                if msg_type in ("command", "get_keybinds", "set_keybinds"):
+                # "offmap": la web vio el camion fuera del mapa que conoce; el
+                # cliente ofrece armar el mapa en la PC (map_builder.py).
+                # "nav_hud": el giro y lo que falta para el overlay en el
+                # juego; texto corto, se descarta si viene grande.
+                if msg_type == "nav_hud" and len(data) > NAV_HUD_MAX_BYTES:
+                    continue
+                if msg_type in ("command", "get_keybinds", "set_keybinds", "offmap", "nav_hud"):
                     if session.client_ws is not None:
                         await session.client_ws.send_text(data)
                 elif msg_type == "set_live_share":
@@ -1250,10 +1910,56 @@ async def ws_viewer(websocket: WebSocket, code: str):
                     # simple: si no compartis tu posicion, tampoco ves la de
                     # nadie (se resuelve solo via el filtro en
                     # broadcast_live_positions, no hace falta nada mas aca).
-                    session.share_position = bool(payload.get("enabled"))
-                    session.map_variant = payload.get("mapVariant") if session.share_position else None
-                    if not session.share_position:
-                        session.last_position = None
+                    enabled = bool(payload.get("enabled"))
+                    explicit = payload.get("explicit")
+                    # explicit True = el usuario toco el tilde; False = el
+                    # reenvio automatico de una pestana al (re)conectar, con
+                    # su default local. Ese reenvio no puede volver a prender
+                    # lo que el usuario apago a mano (apagar si, siempre).
+                    # Sin la clave es una pestana vieja: se aplica como antes
+                    # (auditoria del 10-10).
+                    if not (explicit is False and enabled and session.share_off_by_user):
+                        if isinstance(explicit, bool):
+                            session.share_off_by_user = not enabled
+                        session.share_position = enabled
+                        # Solo un nombre de variante valido: una lista o un
+                        # dict rompia broadcast_live_positions y /live/summary
+                        # para todos (mismo chequeo que clean_offmap_report).
+                        variant = payload.get("mapVariant")
+                        if not isinstance(variant, str) or not LIVE_MAP_VARIANT_RE.match(variant):
+                            variant = None
+                        session.map_variant = variant if session.share_position else None
+                        # mismo chequeo contra el juego que reporta la telemetria
+                        session.map_variant = coerce_map_variant(session.map_variant, (session.last_summary or {}).get("game"))
+                        session.live_nick = clean_live_nick(payload.get("nick")) if session.share_position else None
+                        if not session.share_position:
+                            session.last_position = None
+                            session.live_route = None
+                    # A todas las pestanas, para que sincronicen el tilde
+                    # (tambien a la que mando un reenvio que se ignoro).
+                    estado = live_share_state_message(session)
+                    for outbox in list(session.viewer_outboxes.values()):
+                        outbox.push_control(estado)
+                elif msg_type == "live_route":
+                    # Sin compartir la posicion no hay mapa donde dibujarla.
+                    nueva = clean_live_route(payload.get("points")) if session.share_position else None
+                    if nueva != session.live_route:
+                        session.live_route = nueva
+                        session.live_route_rev += 1
+                        live_route_push(session)
+                elif msg_type == "offmap_report":
+                    report = clean_offmap_report(payload)
+                    if report and report["variant"] not in session.offmap_reported:
+                        session.offmap_reported.add(report["variant"])
+                        # PUT a R2 bloqueante: en un thread, como las demas stats.
+                        asyncio.create_task(asyncio.to_thread(record_offmap_report, report))
+                elif msg_type == "missing_company":
+                    report = clean_missing_company(payload)
+                    if report:
+                        clave = (report["variant"], report["company"], report["city"])
+                        if clave not in session.missing_companies_reported and len(session.missing_companies_reported) < MISSING_COMPANY_PER_SESSION:
+                            session.missing_companies_reported.add(clave)
+                            asyncio.create_task(asyncio.to_thread(record_missing_company, report))
                 elif msg_type == "set_currency":
                     cur = payload.get("currency")
                     session.viewer_currency = cur.upper() if is_valid_currency(cur) else None
@@ -1272,3 +1978,4 @@ async def ws_viewer(websocket: WebSocket, code: str):
         if outbox is not None:
             outbox.close()
         session.last_seen = time.time()
+        await notify_client_viewers(session)

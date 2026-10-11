@@ -68,7 +68,7 @@
   .iconBtn svg { width: 18px; height: 18px; }
   .iconBtn.discord { color: #8ea1ff; }
   .iconBtn.discord:hover { background: #5865F2; color: #fff; border-color: #5865F2; }
-  .langSelect { width: auto; padding: 0 0.4rem; -webkit-appearance: none; appearance: none; text-transform: uppercase; }
+  .langSelect { padding: 0 0.15rem; -webkit-appearance: none; appearance: none; text-transform: uppercase; text-align: center; text-align-last: center; }
   .langSelect option { text-transform: none; color: #111; }
   @media (max-width: 640px) {
     .iconBtn.secondary { display: none; }
@@ -144,7 +144,9 @@
      propia debajo, sin que quede como una tercera columna al costado. */
   .rowWrap { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 
-  #mapPanel { position: relative; flex: 1 1 auto; min-width: 0; overflow: hidden; padding: 0; border-radius: 12px; }
+  /* Cuadrado, igual que el panel de al lado: comparten un borde y uno
+     redondeado contra otro recto se lee como un error. */
+  #mapPanel { position: relative; flex: 1 1 auto; min-width: 0; overflow: hidden; padding: 0; border-radius: 0; }
   #mapCanvas { width: 100%; height: 100%; background: #2b2f36; }
   .mapLoading {
     position: absolute; top: 0.6rem; left: 50%; transform: translateX(-50%); z-index: 1150;
@@ -153,7 +155,21 @@
   }
   .mapSpinner { width: 12px; height: 12px; border: 2px solid #444; border-top-color: var(--accent); border-radius: 50%; animation: mapSpin 0.8s linear infinite; }
   @keyframes mapSpin { to { transform: rotate(360deg); } }
-  .mapHint { position: absolute; bottom: 0.5rem; right: 0.5rem; font-size: 0.7rem; color: #ddd; background: rgba(0,0,0,0.5); padding: 2px 6px; border-radius: 4px; z-index: 1000; }
+  .mapHint { position: absolute; bottom: 0.5rem; right: 0.5rem; font-size: 0.7rem; color: #ddd; background: rgba(0,0,0,0.5); padding: 2px 6px; border-radius: 4px; z-index: 1000; transition: opacity 0.6s ease; }
+  /* Que mapa/mods estan cargados se mira una vez, al arrancar: despues es un
+     cartel de mas que ademas se pisa con el mini-HUD cuando tiene la ETA. */
+  .mapHint.faded { opacity: 0; pointer-events: none; }
+  .mapHint .mapHintCredit { display: block; opacity: 0.8; }
+  .mapHint a, .modsCredits a { color: inherit; text-decoration: underline; }
+  /* Sin WebGL (LibreWolf lo trae apagado): el mapa no se puede dibujar y
+     antes quedaba gris sin explicacion. */
+  .mapNoWebgl { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 1100;
+    width: min(26rem, calc(100% - 2rem)); background: rgba(23,26,31,0.96); border: 1px solid #333; border-radius: 10px;
+    padding: 0.9rem 1rem; font-size: 0.85rem; color: var(--text); line-height: 1.4; }
+  .mapNoWebgl[hidden] { display: none; }
+  .mapNoWebgl b { display: block; font-size: 0.95rem; margin-bottom: 0.35rem; }
+  .mapNoWebgl p { margin: 0.35rem 0 0; }
+  .mapNoWebgl .muted { color: var(--muted); font-size: 0.8rem; }
 
   /* Banner grande y parpadeante cuando se corta la conexion - a diferencia
      del texto chico de #status, esto se nota de un vistazo aunque estes
@@ -188,12 +204,17 @@
   .svgMarker.waypoint { width: 24px; height: 24px; }
   .otherPlayerMarker { width: 22px; height: 22px; opacity: 0.9; filter: drop-shadow(0 0 2px #000); }
 
-  /* Geographic heading and camera compensation are handled by the marker. */
+  /* Flecha de heading del camion: el mapa se queda siempre norte-arriba (las
+     etiquetas de ciudades vienen horneadas en los tiles, rotar el mapa las
+     dejaria ilegibles), pero la flecha SI rota para mostrar hacia donde
+     apunta el camion. 0deg = norte, gira en sentido horario con headingDeg. */
+  /* 18x22: con 14x16 se perdia en una tablet (resena de Roane Gaming, 10-10:
+     "if it was a little bit bigger, it probably would be better"). */
   .truckArrow {
     width: 0; height: 0;
-    border-left: 17px solid transparent;
-    border-right: 17px solid transparent;
-    border-bottom: 38px solid var(--accent);
+    border-left: 9px solid transparent;
+    border-right: 9px solid transparent;
+    border-bottom: 22px solid var(--accent);
     filter: drop-shadow(0 0 2px #000) drop-shadow(0 0 2px #000);
   }
 
@@ -205,46 +226,69 @@
     box-shadow: 0 1px 4px rgba(0,0,0,0.4);
   }
   .mapBtn:hover { background: #eee; }
+  /* Opcionales (Ajustes): los botones blancos sobre el mapa oscuro le
+     resultaban demasiado fuertes a mas de uno, y en el telefono son muchos a
+     la vez. Con .faded siguen andando: cambia la opacidad, no el click. */
+  body.darkBtns .mapBtn { background: #1b1f27; color: #e9edf3; box-shadow: 0 1px 4px rgba(0,0,0,0.55); }
+  body.darkBtns .mapBtn:hover { background: #262c36; }
+  body.fadeBtns .mapBtn { transition: opacity 0.5s ease; }
+  body.fadeBtns.btnsIdle .mapBtn { opacity: 0.25; }
+
+  /* Resumen de la ruta, abajo al centro del mapa (PR #1). */
   .routeSummary {
     position: absolute; bottom: 0.6rem; left: 50%; transform: translateX(-50%);
-    width: min(440px, calc(100% - 1.2rem)); box-sizing: border-box; z-index: 1250;
-    background: #f7f8fa; color: #20242a; border-radius: 12px; padding: 0.3rem 0.7rem 0.6rem;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+    width: min(420px, calc(100% - 1.2rem)); box-sizing: border-box; z-index: 1250;
+    background: rgba(23, 26, 31, 0.94); color: #fff; border-radius: 12px;
+    padding: 0.45rem 0.5rem 0.4rem 0.8rem; box-shadow: 0 2px 10px rgba(0,0,0,0.45);
   }
   .routeSummary[hidden] { display: none; }
-  .routeSummaryDetails { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-weight: 700; font-size: 0.9rem; }
-  #resetRouteBtn { width: 44px; height: 44px; flex-shrink: 0; border: 0; border-radius: 50%; background: transparent; color: #555; font-size: 1.8rem; cursor: pointer; }
-  #resetRouteBtn:hover { background: #e4e6e9; }
-  #routeProgress { display: block; width: 100%; height: 5px; border: 0; border-radius: 4px; overflow: hidden; appearance: none; background: #dce0e4; accent-color: #39a85b; }
-  #routeProgress::-webkit-progress-bar { background: #dce0e4; }
-  #routeProgress::-webkit-progress-value { background: #39a85b; }
-  #routeProgress::-moz-progress-bar { background: #39a85b; }
-  #mapPanel.hasRouteSummary .navPanel { bottom: 5.5rem; }
-  #mapPanel.hasRouteSummary .bottomRightHud { bottom: 5.5rem; }
-  #mapPanel.hasRouteSummary .mapHint { bottom: 0.1rem; font-size: 0.6rem; }
+  .routeProgressTrack { height: 4px; border-radius: 3px; background: #2b3038; overflow: hidden; margin-bottom: 0.35rem; }
+  .routeProgressBar { height: 100%; width: 0; background: #4caf50; transition: width 0.6s ease; }
+  .routeSummaryRow { display: flex; align-items: center; gap: 0.9rem; font-size: 0.8rem; color: var(--muted); }
+  .routeStat b { color: #fff; font-size: 0.95rem; font-weight: 700; margin-right: 0.15rem; }
+  .routeStat b { white-space: nowrap; }
+  /* En un celular no entran los tres datos con su etiqueta al lado y los dos
+     botones: el numero se partia ("862.0 / km"). La etiqueta va debajo. */
+  @media (max-width: 520px) {
+    .routeSummaryRow { gap: 0.7rem; }
+    .routeStat { display: flex; flex-direction: column; line-height: 1.2; }
+    .routeStat b { margin-right: 0; }
+  }
+  .routeResetBtn {
+    margin-left: auto; width: 30px; height: 30px; flex-shrink: 0; border: 0; border-radius: 50%;
+    background: transparent; color: var(--muted); font-size: 1rem; line-height: 1; cursor: pointer;
+  }
+  .routeResetBtn:hover { background: rgba(255,255,255,0.12); color: #fff; }
+  .routeResetBtn + .routeResetBtn { margin-left: 0; }
+  .routeResetBtn svg { display: block; margin: auto; }
+  /* Minimizado: una barrita de progreso y nada mas, para que no tape el mapa.
+     Tocarla (el boton transparente que la cubre) lo vuelve a abrir. */
+  .routeExpandBtn { display: none; position: absolute; inset: 0; border: 0; background: transparent; cursor: pointer; border-radius: inherit; }
+  .routeSummary.min { width: min(180px, calc(100% - 1.2rem)); padding: 0.45rem 0.6rem; }
+  .routeSummary.min .routeSummaryRow, .routeSummary.min .routeApprox, .routeSummary.min .routeStop { display: none; }
+  .routeSummary.min .routeProgressTrack { margin-bottom: 0; height: 6px; }
+  .routeSummary.min .routeExpandBtn { display: block; }
+  /* Que el resumen no tape el mini-HUD ni el cartel del mapa. El alto lo
+     mide app.js (keepPanelsClearOfRouteSummary): con el aviso de destino
+     aproximado el resumen crece y un valor fijo quedaba corto. */
+  #mapPanel.hasRouteSummary .bottomRightHud { bottom: calc(var(--route-summary-h, 3.3rem) + 2.4rem); }
+  #mapPanel.hasRouteSummary .mapHint { bottom: calc(var(--route-summary-h, 3.3rem) + 1rem); font-size: 0.62rem; }
+  /* Columna de botones del mapa: flex, asi los que aparecen y desaparecen
+     (3D solo en modo nav, comandos solo en horizontal, 💬 solo en convoy) no
+     dejan huecos ni se pisan. Antes cada uno tenia su top absoluto y el 3D
+     colgaba al costado del de navegacion. */
   .mapLeftControls {
-    position: absolute; top: 0.6rem; left: 0.6rem; z-index: 1000;
+    position: absolute; top: calc(0.6rem + env(safe-area-inset-top, 0px));
+    left: calc(0.6rem + env(safe-area-inset-left, 0px)); z-index: 1000;
     display: flex; flex-direction: column; gap: 0.5rem;
-    max-height: calc(100% - 1.2rem); overflow-y: auto; scrollbar-width: none;
+    max-height: calc(100% - 1.2rem); pointer-events: none;
   }
-  .mapLeftControls .mapBtn { position: static; flex-shrink: 0; }
-  .mapNavigationControls {
-    position: absolute; top: 50%; right: 0.6rem; transform: translateY(-50%); z-index: 1000;
-    display: flex; flex-direction: column; align-items: center; gap: 0.5rem;
-  }
-  .mapNavigationControls .mapBtn { position: static; flex-shrink: 0; }
-  #zoomInBtn, #zoomOutBtn { font-size: 1.6rem; }
-  #recenterBtn { top: 0.6rem; left: 0.6rem; }
-  #fullscreenBtn { top: 3.9rem; left: 0.6rem; }
-  #navToggleBtn { top: 7.2rem; left: 0.6rem; }
+  .mapLeftControls .mapBtn { position: static; flex-shrink: 0; pointer-events: auto; }
   #navToggleBtn.active { background: var(--accent); color: #fff; }
-  /* 3D is part of the left control stack and appears in navigation mode. */
-  #tilt3dBtn { top: 7.2rem; left: 3.9rem; }
+  /* 3D: debajo del boton de navegacion, solo visible en modo nav */
   #tilt3dBtn.active { background: var(--accent); color: #fff; }
-  #waypointBtn { top: 10.5rem; left: 0.6rem; }
   #waypointBtn.active { background: var(--accent); color: #fff; }
   #waypointBtn.set { background: #ffb020; color: #111; }
-  #commandsToggleBtn { top: 13.8rem; left: 0.6rem; }
 
   /* panelToggleBtn se movio de la pila de la izquierda a esta esquina, justo
      debajo del indicador de velocidad del mini-HUD - un contenedor flex en
@@ -252,23 +296,79 @@
      crece (mas lineas opcionales activadas en Settings) el boton se corre
      solo hacia abajo en vez de superponerse. */
   #topRightControls {
-    position: absolute; top: 0.6rem; right: 0.6rem; z-index: 1000;
+    position: absolute; top: calc(0.6rem + env(safe-area-inset-top, 0px));
+    right: calc(0.6rem + env(safe-area-inset-right, 0px)); z-index: 1000;
     display: flex; flex-direction: column; align-items: flex-end; gap: 0.5rem;
   }
   #topRightControls .mapBtn { position: static; }
-  @media (max-width: 900px) {
-    #topRightControls {
-      display: grid;
-      grid-template-columns: auto 44px;
-      align-items: start;
-      pointer-events: none;
-    }
-    #topRightControls > * { pointer-events: auto; }
-    #topRightControls #miniHud { grid-column: 1; grid-row: 1 / span 2; }
-    #topRightControls #panelToggleBtn { grid-column: 2; grid-row: 1; }
-    #topRightControls #poiBtn { grid-column: 2; grid-row: 2; }
-  }
+  #topRightBtns { display: flex; flex-direction: column; align-items: flex-end; gap: 0.5rem; }
 
+  /* Botones movibles: mientras se acomodan, el grupo entero agarra el puntero
+     (los botones no, si no se dispararia la accion al soltarlos) y se marca
+     con un contorno para que se vea que es lo que se arrastra. */
+  .mapBtnGroup.moved { position: absolute; z-index: 1000; }
+  body.editLayout .mapBtnGroup { pointer-events: auto; }
+  /* En modo acomodar, cada boton se arrastra solo: tiene que recibir el
+     puntero (el click lo come swallowClick) y no arrancar un scroll. */
+  body.editLayout .mapBtn { touch-action: none; cursor: grab; outline: 2px dashed var(--accent); outline-offset: 2px; }
+  .layoutGrip {
+    display: none; align-items: center; justify-content: center;
+    width: 30px; height: 18px; border-radius: 9px; cursor: grab; touch-action: none;
+    background: var(--accent); color: #fff; font-size: 0.7rem; line-height: 1;
+  }
+  body.editLayout .layoutGrip { display: flex; }
+
+  /* Paneles movibles: el mini-HUD, la caja de datos extra y las indicaciones
+     del GPS. Mientras se acomodan se muestran aunque no haya viaje en curso,
+     que si no no habria nada que agarrar. */
+  #miniHud.moved, #miniHudExtra.moved, #navPanel.moved { position: absolute; z-index: 1200; }
+  #navPanel.moved { transform: none; left: auto; }
+  body.editLayout #miniHud, body.editLayout #miniHudExtra { display: flex !important; }
+  body.editLayout #navPanel { display: block !important; }
+  body.editLayout .movable { touch-action: none; cursor: grab; outline: 2px dashed var(--accent); outline-offset: 3px; }
+  /* Vacios no se podrian agarrar: mientras se acomodan tienen un tamano
+     minimo y muestran de que panel se trata. */
+  body.editLayout #miniHudExtra, body.editLayout #navPanel { min-width: 130px; min-height: 26px; }
+  body.editLayout .movable:empty::after { content: attr(data-placeholder); opacity: 0.75; }
+  /* Tamano (style.scale): crece desde la esquina de arriba a la izquierda,
+     que es la que guarda la posicion; asi agrandar no lo corre de lugar. */
+  #mapPanel .moved { transform-origin: 0 0; }
+  /* La esquina de abajo a la derecha es la manija de tamano de los paneles y
+     de los botones sueltos (ver LAYOUT_RESIZE_CORNER_PX): un triangulo la
+     marca. Es fondo y no un pseudo-elemento: ::after ya lo usa el texto de
+     muestra de los paneles vacios. */
+  body.editLayout #miniHud, body.editLayout #miniHudExtra, body.editLayout #navPanel,
+  body.editLayout .mapBtn.moved {
+    background-image: linear-gradient(135deg, transparent 50%, var(--accent) 50%);
+    background-size: 14px 14px; background-position: right bottom; background-repeat: no-repeat;
+  }
+  .layoutGrip.layoutResize { cursor: nwse-resize; font-size: 0.8rem; }
+  /* En el telefono, con la ayuda y los dos botones en una sola fila, el texto
+     caia en una columna de seis renglones: la ayuda va en su propio renglon. */
+  /* Pegada arriba y fuera del mapa: dentro del mapa siempre terminaba
+     tapando el boton o el panel que se queria agarrar. */
+  .layoutBar {
+    position: sticky; top: 0; z-index: 2000;
+    flex-wrap: wrap; justify-content: center;
+    display: flex; gap: 0.5rem; align-items: center; font-size: 0.8rem;
+    background: rgba(23, 26, 31, 0.95); color: #fff; padding: 0.5rem 0.8rem;
+    border-radius: 0; box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+    border-bottom: 1px solid var(--accent);
+  }
+  /* Con lugar, todo en un renglon; en pantalla angosta la ayuda se va sola
+     al de arriba. */
+  .layoutBar > span { flex: 1 1 auto; text-align: center; min-width: 14rem; }
+  .layoutBar .layoutBarGrid { display: flex; align-items: center; gap: 0.3rem; white-space: nowrap; }
+  /* settingsLinkBtn es width:100% porque vive en una columna: aca los tres
+     tienen que compartir un renglon o la barra ocupa media pantalla. */
+  .layoutBar .settingsLinkBtn { width: auto; flex: 0 1 auto; padding: 0.4rem 0.8rem; }
+  /* Grilla de alineacion, solo mientras se acomoda. Va encima del mapa pero
+     debajo de los botones (z-index 1000), y no recibe clicks. */
+  body.editLayout.layoutGridOn #mapPanel::before {
+    content: ''; position: absolute; inset: 0; z-index: 900; pointer-events: none;
+    background-image: repeating-linear-gradient(to right, rgba(255,255,255,0.10) 0 1px, transparent 1px 16px),
+                      repeating-linear-gradient(to bottom, rgba(255,255,255,0.10) 0 1px, transparent 1px 16px);
+  }
 
   /* Panel de indicaciones del modo navegacion - giro/distancia genericos
      calculados de la curvatura de la ruta ya calculada, sin nombres de
@@ -277,9 +377,11 @@
   .roadBadge.mini { margin-top: 0.3rem; }
   .navNext { display: block; font-size: 0.72rem; color: var(--muted); font-weight: 500; margin-top: 0.1rem; }
   .mapBtn .btnText { font-size: 0.72rem; font-weight: 800; }
+  /* En pantalla completa este panel quedaba justo abajo del recorte de la
+     camara de algunos telefonos: se baja lo que diga la zona segura. */
   .navPanel {
-    position: absolute; bottom: 2.1rem; left: 50%; transform: translateX(-50%);
-    max-width: calc(100% - 8rem); box-sizing: border-box; overflow-wrap: anywhere;
+    position: absolute; top: calc(0.6rem + env(safe-area-inset-top, 0px));
+    left: 50%; transform: translateX(-50%);
     z-index: 1200; background: rgba(23, 26, 31, 0.92); color: #fff;
     padding: 0.5rem 1rem; border-radius: 10px; font-size: 0.95rem;
     font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.4); white-space: normal;
@@ -322,6 +424,8 @@
     font-size: 0.72rem; color: var(--muted); text-align: right;
   }
   .miniHudExtra:empty { display: none; }
+  /* Pegados al mini-HUD cuando este tiene lugar propio: un solo recuadro. */
+  #miniHud > .miniHudExtra { background: none; padding: 0.3rem 0 0; }
   .layout.panelHidden .miniHudExtra:not(:empty), .layout.commandsPageActive .miniHudExtra:not(:empty) { display: flex; }
 
   .settingsOverlay {
@@ -353,6 +457,16 @@
   .settingsSectionTitle { font-size: 0.8rem; color: var(--muted); margin: 1rem 0 0.4rem; }
   .settingsRow { display: flex; align-items: center; gap: 0.5rem; font-size: 0.88rem; padding: 0.25rem 0; cursor: pointer; }
   .colorOptions { display: flex; gap: 0.6rem; }
+  /* Zoom del modo navegacion: el deslizador ocupa lo que sobre entre los dos
+     extremos; el boton de volver al de siempre no ocupa todo el ancho como
+     el resto de los settingsLinkBtn. */
+  .navZoomRow { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; }
+  .navZoomRow input[type="range"] { flex: 1 1 auto; min-width: 0; accent-color: var(--accent); }
+  .navZoomRow .settingsLinkBtn { width: auto; flex: 0 0 auto; padding: 0.3rem 0.6rem; }
+  .voiceRow { display: flex; align-items: center; gap: 0.5rem; margin: 0.3rem 0; }
+  .voiceRow .settingsSelect { flex: 1 1 auto; min-width: 0; }
+  .voiceRow > span { font-size: 0.88rem; flex: 0 0 auto; }
+  .voiceRow .settingsLinkBtn:not(.settingsSelect) { width: auto; flex: 0 0 auto; padding: 0.3rem 0.6rem; }
   .colorSwatch {
     width: 30px; height: 30px; border-radius: 50%; border: 2px solid transparent;
     cursor: pointer; padding: 0;
@@ -367,6 +481,8 @@
     background: #23262c; color: var(--text); cursor: pointer; font-size: 0.85rem;
   }
   .settingsLinkBtn:hover { border-color: #555; }
+  /* El link al roadmap es un <a> con la misma pinta que los botones. */
+  .settingsLinkA { display: block; box-sizing: border-box; text-align: center; text-decoration: none; }
   .waypointModalButtons { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 1rem; }
   .waypointModalButtons button {
     padding: 0.55rem; border-radius: 6px; border: none; cursor: pointer; font-size: 0.9rem;
@@ -392,7 +508,7 @@
     flex: 0 0 300px;
     width: 300px;
     background: var(--panel);
-    border-radius: 0 12px 12px 0;
+    border-radius: 0;
     padding: 0.75rem;
     overflow-y: auto;
     overflow-x: hidden;
@@ -411,7 +527,7 @@
      placeCommandsPanel() en el script). */
   .cmdGrid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(74px, 1fr));
     gap: 0.6rem;
     padding: 0.6rem;
   }
@@ -423,9 +539,24 @@
     line-height: 1.15;
   }
   .cmdBtn svg { width: 24px; height: 24px; flex-shrink: 0; }
-  /* Etiquetas largas de una sola palabra (idiomas) no deben salirse del boton. */
-  .cmdBtn span { max-width: 100%; overflow-wrap: anywhere; }
+  /* Etiquetas largas de una sola palabra (idiomas) no deben salirse del boton.
+     Con overflow-wrap:anywhere se partian a la mitad ("Infotainme|nt"); con
+     break-word + hyphens:auto solo se cortan si no entran, y con guion. */
+  .cmdBtn span { max-width: 100%; overflow-wrap: break-word; hyphens: auto; }
+  /* Palabras largas sin punto de corte natural ("Infotainment",
+     "Limpiaparabrisas"): media letra menos antes que partirlas al medio. */
+  .cmdBtn span.long { font-size: 0.6rem; letter-spacing: -0.01em; }
   .cmdBtn:hover { border-color: #555; }
+  /* Botones custom: una "tecla" dibujada con el nombre de la tecla, y un
+     lapiz chiquito en la esquina para editarlo/borrarlo. */
+  .cmdBtn.cmdCustom { position: relative; }
+  .cmdBtn .keyCap { display: inline-block; min-width: 28px; max-width: 100%; height: 24px; line-height: 22px; padding: 0 5px; border: 1px solid #666; border-bottom-width: 3px; border-radius: 5px; background: #2d3138; font-size: 0.62rem; font-weight: 700; letter-spacing: 0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cmdBtn.active .keyCap { border-color: rgba(255,255,255,0.6); background: rgba(255,255,255,0.15); }
+  .cmdEditBadge { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; border-radius: 50%; border: none; background: rgba(255,255,255,0.08); color: var(--muted); font-size: 0.7rem; line-height: 18px; text-align: center; cursor: pointer; padding: 0; }
+  .cmdEditBadge:hover { background: rgba(255,255,255,0.2); color: var(--text); }
+  .cmdBtn.cmdAdd { border-style: dashed; color: var(--muted); }
+  .cmdBtn.cmdAdd:hover { color: var(--text); }
+  .cmdBtn.cmdAdd .plus { font-size: 1.4rem; line-height: 24px; height: 24px; }
   .cmdBtn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
   #commandsDrawer {
@@ -484,11 +615,20 @@
     /* Panel de indicaciones entre la columna de botones de la izquierda y
        los botones de la derecha, con salto de linea, en vez de centrado y
        sin cortar (se montaba sobre la velocidad). */
-    .navPanel { left: 4rem; right: 4rem; transform: none; white-space: normal; font-size: 0.88rem; padding: 0.45rem 0.7rem; }
+    .navPanel { left: 7.4rem; right: 4rem; transform: none; white-space: normal; font-size: 0.88rem; padding: 0.45rem 0.7rem; }
+    /* El combustible como columna a la derecha quedaba en ~82 px: cada dato
+       ocupaba dos renglones ("Combustible" / "79%") contra el borde. En
+       vertical va como una fila compacta debajo de la velocidad. */
+    /* Mas especificidad que las reglas base de .fuelStack, que estan mas
+       abajo en el archivo y si no ganan por orden. */
+    #infoPanel .speedRow { flex-wrap: wrap; row-gap: 0.4rem; }
+    #infoPanel .fuelStack { flex-direction: row; flex-wrap: wrap; align-items: baseline; width: 100%; margin-left: 0; text-align: left; gap: 0 0.55rem; }
+    #infoPanel .fuelStack > div + div::before { content: '·'; margin-right: 0.55rem; opacity: 0.55; }
+    #infoPanel #fuelAvgLine { min-height: 0; }
     .layout { flex-direction: column; }
     .rowWrap { flex-direction: column; }
     #mapPanel { flex: 1 1 auto; min-height: 0; }
-    #infoPanel { flex: 0 0 34vh; width: auto; max-height: 34vh; border-radius: 16px 16px 0 0; }
+    #infoPanel { flex: 0 0 34vh; width: auto; max-height: 34vh; border-radius: 0; }
     .layout.panelHidden #infoPanel { flex-basis: 0; padding-top: 0; padding-bottom: 0; }
     .panelSwipe {
       display: flex; height: 100%; overflow-x: auto; overflow-y: hidden;
@@ -524,9 +664,17 @@
     font-size: 1.1rem; font-weight: 800;
     flex-shrink: 0;
   }
-  .limitSign.over { animation: pulse 1s infinite; }
+  /* El pulso de "te pasaste del limite" es un anillo aparte que solo cambia
+     opacidad y escala: eso lo anima la placa de video sola. Animar el
+     box-shadow del cartel obligaba a repintarlo en cada cuadro, justo en
+     los tramos largos por encima del limite. */
+  .limitSign { position: relative; }
+  .limitSign.over::after {
+    content: ''; position: absolute; inset: -4px; border-radius: 50%; pointer-events: none;
+    border: 3px solid rgba(255,77,77,0.7); animation: pulse 1s ease-out infinite; will-change: transform, opacity;
+  }
   #jobDeadline.over { color: var(--danger); font-weight: 700; }
-  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(255,77,77,0.6); } 50% { box-shadow: 0 0 0 8px rgba(255,77,77,0); } }
+  @keyframes pulse { 0% { transform: scale(1); opacity: 0.9; } 70%, 100% { transform: scale(1.35); opacity: 0; } }
 
   .cruiseDisplay { display: flex; align-items: center; gap: 0.4rem; color: #4caf50; }
 
@@ -537,9 +685,25 @@
   #fuelAvgLine { min-height: 2.4em; line-height: 1.2; }
   .cruiseSpeed { font-size: 1.5rem; font-weight: 700; line-height: 1; }
 
+  /* Segunda linea de una fila: la conversion de moneda y el equivalente en
+     tiempo real. Antes iban pegados con " . " en el mismo renglon y la fila
+     entera (etiqueta incluida) se partia en dos. */
+  .subValue { display: block; font-size: 0.72rem; color: var(--muted); font-weight: 400; margin-top: 0.05rem; }
+
+  /* Antes de que llegue el primer dato de telemetria el panel era una
+     columna de guiones, que parece roto. Mientras tanto se muestra un bloque
+     corto que dice que falta; las tarjetas aparecen con el primer tick. */
+  #panelEmpty { display: none; padding: 1.1rem 0.5rem; text-align: center; color: var(--muted); font-size: 0.82rem; line-height: 1.45; }
+  #panelEmpty .emptyTitle { display: block; color: var(--text); font-weight: 600; font-size: 0.92rem; margin-bottom: 0.25rem; }
+  #panelEmpty svg { width: 30px; height: 30px; opacity: 0.45; margin-bottom: 0.35rem; }
+  #infoPanel.noData #infoPageContent .card { display: none; }
+  /* Los tres guiones del combustible tambien sobran mientras no hay datos. */
+  #infoPanel.noData .fuelStack { display: none; }
+  #infoPanel.noData #panelEmpty { display: block; }
+
   /* Panel de info agrupado en tarjetas (Trip / Truck / Session) en vez de
      una lista plana de filas todas iguales. */
-  .card { background: #1d2127; border-radius: 10px; padding: 0.45rem 0.6rem 0.35rem; }
+  .card { background: #1d2127; border-radius: 3px; padding: 0.45rem 0.6rem 0.35rem; }
   .cardTitle { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 0.15rem; }
   .cardTitleRow { display: flex; justify-content: space-between; align-items: center; }
   .cardTitleRow .waypointClearBtn { text-transform: none; letter-spacing: 0; margin-left: 0; }
@@ -590,7 +754,7 @@
   .waypointKind { color: var(--muted); font-size: 0.68rem; }
   /* Sin position:relative: pisaria el position:absolute que MapLibre le pone
      al marcador y el div pasaria a ocupar todo el ancho del mapa. */
-  .waypointMarkerWrap { width: 24px; height: 24px; }
+  .waypointMarkerWrap { cursor: pointer; width: 24px; height: 24px; }
   .waypointBadge { position: absolute; top: -4px; right: -8px; width: 15px; height: 15px; border-radius: 50%; background: #1a1002; color: #ffb020; font-size: 0.62rem; font-weight: 800; display: flex; align-items: center; justify-content: center; border: 1px solid #ffb020; }
   .mapBtnBadge { position: absolute; top: -3px; right: -3px; min-width: 17px; height: 17px; border-radius: 9px; background: #ffb020; color: #1a1002; font-size: 0.66rem; font-weight: 800; display: flex; align-items: center; justify-content: center; padding: 0 3px; }
   .poiPanel { width: min(420px, 94vw); }
@@ -607,6 +771,9 @@
   .poiName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .poiSub { font-size: 0.72rem; color: var(--muted); }
   .poiDist { color: var(--accent); font-weight: 600; font-size: 0.8rem; flex-shrink: 0; }
+  .poiDir { display: inline-flex; flex-shrink: 0; color: var(--text); opacity: 0.85; }
+  .poiDir.behind { color: #e0a040; }
+  .poiItem.behind .poiText, .poiItem.behind .poiIcon { opacity: 0.6; }
   .poiEmpty { color: var(--muted); font-size: 0.85rem; padding: 0.5rem 0; }
   #poiCloseBtn { margin-top: 0.8rem; width: 100%; padding: 0.5rem; border-radius: 6px; border: none; background: var(--accent); color: #fff; cursor: pointer; font-size: 0.9rem; }
   .waypointClearBtn {
@@ -662,37 +829,109 @@
   .convoyEdgeLayer { position: absolute; inset: 0; pointer-events: none; z-index: 1050; overflow: hidden; }
   .convoyEdge { position: absolute; transform: translate(-50%, -50%); pointer-events: auto; cursor: pointer; background: rgba(23, 26, 31, 0.92); border: 2px solid; border-radius: 999px; padding: 2px 8px; font-size: 0.7rem; font-weight: 700; color: #fff; white-space: nowrap; box-shadow: 0 1px 4px rgba(0,0,0,0.5); }
   .convoyEdgeArrow { display: inline-block; }
-  #convoyMsgBtn { top: 13.8rem; left: 0.6rem; font-size: 1.2rem; }
-  @media (max-width: 900px) and (orientation: portrait) { #convoyMsgBtn { top: 13.8rem; } }
+  #convoyMsgBtn { font-size: 1.2rem; }
   .convoyMsgPop { position: absolute; top: 13.8rem; left: 3.9rem; z-index: 1300; background: rgba(23, 26, 31, 0.96); border: 1px solid #333; border-radius: 10px; padding: 0.4rem; display: grid; grid-template-columns: 1fr 1fr; gap: 0.3rem; width: 15rem; box-shadow: 0 2px 8px rgba(0,0,0,0.5); }
   .convoyQuickBtn { display: flex; align-items: center; gap: 0.4rem; background: #23262c; border: 1px solid #3a3d44; color: var(--text); border-radius: 8px; padding: 0.45rem 0.5rem; font-size: 0.78rem; cursor: pointer; text-align: left; }
   .convoyQuickBtn:hover { border-color: #666; }
   /* espectador: sin datos propios ni botonera */
   body.spectator .speedRow, body.spectator #jobIncome, body.spectator .card:not(.convoyCards), body.spectator #commandsPanel, body.spectator #commandsDrawer, body.spectator #miniHud, body.spectator #convoyMsgBtn { display: none !important; }
   body.spectator #convoyCards { display: block !important; }
+  /* Mapa en vivo publico: sin convoy, con la lista de conductores. */
+  body.livemap #convoyCards, body.livemap #convoyBtn { display: none !important; }
+  /* Sin botonera ni waypoints (son del conductor). Recentrar / pantalla
+     completa / modo nav / 3D aparecen recien al fijar un camion: actuan
+     sobre ese camion (truckMarker se mueve con el, ver livemap.js). */
+  body.livemap #waypointBtn, body.livemap #commandsToggleBtn { display: none !important; }
+  body.livemap:not(.livePinned) #recenterBtn, body.livemap:not(.livePinned) #fullscreenBtn, body.livemap:not(.livePinned) #navToggleBtn, body.livemap:not(.livePinned) #tilt3dBtn { display: none !important; }
+  .liveMapHead { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+  .liveMapRow.followed { background: rgba(59,158,255,0.10); }
+  .liveMapPin { background: none; border: 1px solid transparent; border-radius: 6px; padding: 0.1rem 0.3rem; cursor: pointer; opacity: 0.45; font-size: 0.85rem; }
+  .liveMapPin:hover { opacity: 1; border-color: var(--border); }
+  .liveMapPin.active { opacity: 1; background: rgba(59,158,255,0.25); border-color: var(--blue); }
+  .convoyMarker.followed .convoyArrow { filter: drop-shadow(0 0 6px #3b9eff); }
+  .convoyMarker.followed .convoyLabel { outline: 1px solid var(--blue); }
+  body.livemap .card.liveMapCard { display: block !important; }
+  .liveMapRow { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; border-top: 1px solid var(--border); cursor: pointer; }
+  .liveMapRow:first-child { border-top: none; }
+  .liveMapOffTitle { margin-top: 0.6rem; padding-top: 0.4rem; border-top: 1px solid var(--border); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+  .liveMapRowOff { cursor: default; opacity: 0.75; }
+  .liveMapRow:hover { background: rgba(255,255,255,0.04); }
+  .liveMapRowBody { min-width: 0; flex: 1; }
+  .liveMapRowBody .convoyMeta { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .liveMapRow .convoyStatus { color: var(--muted); font-size: 0.76rem; white-space: nowrap; }
+  #liveMapList { max-height: 60vh; overflow-y: auto; }
   body.spectator .truckMarker { display: none; }
   body.spectator .layout { --spectator: 1; }
 
-  @media (orientation: landscape) and (max-width: 900px),
-         (orientation: landscape) and (max-height: 600px) and (pointer: coarse) {
-    #mapPanel .navPanel, #mapPanel.hasRouteSummary .navPanel {
-      top: 0.6rem; bottom: auto; left: 4rem; right: 15rem; transform: none;
-      max-width: 360px; font-size: 0.8rem; padding: 0.4rem 0.6rem;
-    }
-    #topRightControls { display: grid; grid-template-columns: auto 44px; align-items: start; pointer-events: none; }
-    #topRightControls > * { pointer-events: auto; }
-    #topRightControls #miniHud { grid-column: 1; grid-row: 1 / span 2; }
-    #topRightControls #panelToggleBtn { grid-column: 2; grid-row: 1; }
-    #topRightControls #poiBtn { grid-column: 2; grid-row: 2; }
-    .routeSummary { bottom: 0.35rem; padding: 0 0.6rem 0.25rem; border-radius: 9px; }
-    .routeSummaryDetails { font-size: 0.8rem; }
-    #resetRouteBtn { height: 32px; font-size: 1.5rem; }
-    #routeProgress { height: 3px; }
-    #mapPanel.hasRouteSummary .bottomRightHud { bottom: 3.2rem; }
-    .mapLeftControls, .mapNavigationControls, #topRightControls .mapBtn { transition: opacity 0.2s ease; }
-    #mapPanel.mapControlsIdle .mapLeftControls,
-    #mapPanel.mapControlsIdle .mapNavigationControls,
-    #mapPanel.mapControlsIdle #topRightControls .mapBtn {
-      opacity: 0; visibility: hidden; pointer-events: none;
-    }
+/* Bandera de destino cuando no sabemos la empresa y mostramos el centro de
+   la ciudad: mas tenue, para que se lea como una aproximacion y no como el
+   punto exacto. El texto lo da el aviso del resumen de ruta. */
+.destMarkerWrap.approx { opacity: .55; }
+.routeApprox {
+  padding: 2px 10px 6px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: #ffb020;
+  text-align: center;
+}
+
+
+  /* Panel a pantalla completa sobre el mapa. Tapa todo a proposito: es un
+     tablero, no una tarjeta flotante, y se mira de reojo. */
+  .dashOverlay {
+    position: fixed; inset: 0; z-index: 2400;
+    background: var(--bg);
+    display: flex; flex-direction: column; gap: 0.4rem;
+    padding: max(0.5rem, env(safe-area-inset-top)) max(0.6rem, env(safe-area-inset-right))
+             max(0.5rem, env(safe-area-inset-bottom)) max(0.6rem, env(safe-area-inset-left));
   }
+  .dashOverlay[hidden] { display: none; }
+  .dashOverlayBar { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; }
+  .dashOverlayTitle { font-size: 0.85rem; font-weight: 600; color: var(--muted); }
+  /* El display:none de .iconBtn.secondary en pantallas angostas esconde las
+     acciones de la barra de arriba, que quedan en Ajustes. Aca no hay
+     Ajustes al que ir, asi que se vuelven a mostrar. */
+  .dashOverlayBar .sizeGroup { display: flex; gap: 0.15rem; margin-left: auto; }
+  .dashOverlayBar .iconBtn.secondary { display: inline-flex; }
+  #dashOverlayPanel { flex: 1; min-height: 0; }
+
+/* DLC de mapa: casillas en columnas para que entren los de ATS. */
+.dlcGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr)); column-gap: 0.6rem; }
+
+/* Tarjeta "Trabajo entregado" (showDeliveryCard): arriba al centro, debajo de
+   los modales, hasta que se cierra. */
+.deliveryCard {
+  position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 2400;
+  width: min(320px, calc(100vw - 32px)); padding: 0.75rem 0.9rem 0.6rem;
+  background: var(--panel); color: var(--text); border: 1px solid #4caf50; border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+}
+.deliveryCardHead { display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 0.95rem; }
+.deliveryCardClose, .panelCloseX {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: 1.4rem; line-height: 1; padding: 0.1rem 0.35rem; margin: -0.3rem -0.4rem -0.3rem 0;
+}
+.deliveryCardClose:hover, .panelCloseX:hover { color: var(--text); }
+.deliveryCardRoute { margin-top: 0.3rem; font-size: 0.85rem; }
+.deliveryCardCargo { color: var(--muted); font-size: 0.8rem; margin-bottom: 0.3rem; }
+.deliveryCard .row:last-child { border-bottom: none; }
+.deliveryCardPay span:last-child { font-weight: 700; color: #4caf50; }
+
+/* La X de arriba de un modal largo (buscar lugares): el boton Cerrar queda
+   abajo de la lista y en una tablet no se encontraba ("how do I get out of
+   that?", resena de Roane Gaming). Sticky: sigue a la vista al bajar. */
+.panelCloseX { position: sticky; top: 0; float: right; margin: -0.5rem -0.6rem 0 0.5rem; z-index: 1; }
+
+/* Nombre de un boton al tocarlo en pantallas tactiles (app.js, BTN_TIP_TIMES). */
+.btnTip {
+  position: fixed; z-index: 3100; pointer-events: none; max-width: min(260px, calc(100vw - 16px));
+  background: var(--panel); color: var(--text); border: 1px solid var(--accent); border-radius: 6px;
+  padding: 0.35rem 0.6rem; font-size: 0.82rem; box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+}
+
+/* Proxima parada propia en el resumen de la ruta, con su boton para saltearla. */
+.routeStop { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.3rem; font-size: 0.8rem; }
+.routeStop[hidden] { display: none; }
+.routeStop #routeStopName { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.routeStopSkip { flex-shrink: 0; background: #2b2f36; color: var(--text); border: 1px solid #444; border-radius: 6px; padding: 0.15rem 0.6rem; font-size: 0.78rem; cursor: pointer; }
+.routeStopSkip:hover { border-color: #666; }

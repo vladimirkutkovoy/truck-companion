@@ -5,6 +5,8 @@ import io
 import os
 import zipfile
 
+import pytest
+
 import plugin_installer
 import win_integration
 
@@ -38,20 +40,27 @@ def test_plugin_state_missing_installed_outdated(tmp_path, monkeypatch):
     bin_dir = tmp_path / "bin" / "win_x64"
     bin_dir.mkdir(parents=True)
     assert plugin_installer.plugin_state(str(bin_dir)) == "missing"
+    assert not plugin_installer.has_other_plugin(str(bin_dir))
 
     plugins = bin_dir / "plugins"
     plugins.mkdir()
-    (plugins / "scs-telemetry.dll").write_bytes(b"something else")
+    # El scs-telemetry.dll de otra app no es el nuestro: solo cuenta como
+    # "hay telemetria".
+    (plugins / "scs-telemetry.dll").write_bytes(b"de otra app")
+    assert plugin_installer.plugin_state(str(bin_dir)) == "missing"
+    assert plugin_installer.has_other_plugin(str(bin_dir))
+
+    (plugins / "truckdash-telemetry.dll").write_bytes(b"something else")
     assert plugin_installer.plugin_state(str(bin_dir)) == "outdated"
 
     real = b"fake dll bytes"
     monkeypatch.setattr(plugin_installer, "PLUGIN_DLL_SHA256", hashlib.sha256(real).hexdigest())
-    (plugins / "scs-telemetry.dll").write_bytes(real)
+    (plugins / "truckdash-telemetry.dll").write_bytes(real)
     assert plugin_installer.plugin_state(str(bin_dir)) == "installed"
 
 
 def test_install_plugin_copies_bundled_dll_and_creates_plugins_dir(tmp_path, monkeypatch):
-    fake_dll = tmp_path / "vendor" / "scs-telemetry.dll"
+    fake_dll = tmp_path / "vendor" / "truckdash-telemetry.dll"
     fake_dll.parent.mkdir()
     fake_dll.write_bytes(b"dll contents")
     monkeypatch.setattr(plugin_installer, "bundled_dll_path", lambda: str(fake_dll))
@@ -60,13 +69,13 @@ def test_install_plugin_copies_bundled_dll_and_creates_plugins_dir(tmp_path, mon
     bin_dir = tmp_path / "game" / "bin" / "win_x64"
     bin_dir.mkdir(parents=True)
     installed = plugin_installer.install_plugin(str(bin_dir))
-    assert installed == os.path.join(str(bin_dir), "plugins", "scs-telemetry.dll")
+    assert installed == os.path.join(str(bin_dir), "plugins", "truckdash-telemetry.dll")
     assert open(installed, "rb").read() == b"dll contents"
     assert plugin_installer.plugin_state(str(bin_dir)) == "installed"
 
 
 def test_install_plugin_refuses_tampered_bundled_dll(tmp_path, monkeypatch):
-    fake_dll = tmp_path / "scs-telemetry.dll"
+    fake_dll = tmp_path / "truckdash-telemetry.dll"
     fake_dll.write_bytes(b"tampered")
     monkeypatch.setattr(plugin_installer, "bundled_dll_path", lambda: str(fake_dll))
     try:
@@ -85,6 +94,17 @@ def test_bundled_dll_matches_pinned_sha256():
     assert plugin_installer.sha256_of(path) == plugin_installer.PLUGIN_DLL_SHA256
 
 
+def test_bundled_dll_publica_en_su_propio_bloque():
+    """Nuestra DLL va al lado del scs-telemetry.dll de otras apps: si
+    publicara en "Local\\SCSTelemetry", los dos plugins se pisarian el bloque.
+    El nombre esta en la DLL en UTF-16 (TEXT(...) de SCS_PLUGIN_MMF_NAME).
+    Lo corre tambien "Build plugin" antes de fijar una DLL nueva."""
+    with open(plugin_installer.bundled_dll_path(), "rb") as f:
+        datos = f.read()
+    assert "Local\\TruckDashTelemetry".encode("utf-16-le") in datos
+    assert "Local\\SCSTelemetry".encode("utf-16-le") not in datos
+
+
 def test_resolve_bin_dir_accepts_game_root_bin_or_win_x64(tmp_path):
     root = tmp_path / "American Truck Simulator"
     win = root / "bin" / "win_x64"
@@ -98,42 +118,127 @@ def test_resolve_bin_dir_accepts_game_root_bin_or_win_x64(tmp_path):
     assert plugin_installer.game_for_bin_dir(expected) == "ats"
 
 
-def test_download_and_apply_update_verifies_sha_and_swaps_exe(tmp_path, monkeypatch):
-    exe = tmp_path / "TruckDash.exe"
-    exe.write_bytes(b"old exe")
-    monkeypatch.setattr(win_integration, "exe_path", lambda: str(exe))
-
+def _fake_zip():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("TruckDash/TruckDash.exe", b"new exe")
-    zip_bytes = buf.getvalue()
+    return buf.getvalue()
 
+
+def _fake_urlopen(monkeypatch, payload):
     class FakeResp:
         def __enter__(self):
             return self
+
         def __exit__(self, *a):
             return False
-        def read(self):
-            return zip_bytes
 
-    monkeypatch.setattr(win_integration, "urlopen", lambda url, timeout=0: FakeResp())
+        def read(self):
+            return payload
+
+    monkeypatch.setattr(win_integration.red, "abrir", lambda url, timeout=0: FakeResp())
+
+
+def test_stage_update_verifies_sha_and_leaves_the_running_exe_alone(tmp_path, monkeypatch):
+    exe = tmp_path / "TruckDash.exe"
+    exe.write_bytes(b"old exe")
+    monkeypatch.setattr(win_integration, "exe_path", lambda: str(exe))
+    zip_bytes = _fake_zip()
+    _fake_urlopen(monkeypatch, zip_bytes)
 
     try:
-        win_integration.download_and_apply_update("https://x/y.zip", "0" * 64)
+        win_integration.stage_update("https://x/y.zip", "0" * 64)
     except RuntimeError as exc:
         assert "SHA-256" in str(exc)
     else:
         raise AssertionError("expected SHA mismatch to abort")
-    assert exe.read_bytes() == b"old exe"  # no se toco
+    assert exe.read_bytes() == b"old exe"
+    assert not (tmp_path / "TruckDash.new.exe").exists()
 
-    good_sha = hashlib.sha256(zip_bytes).hexdigest()
-    result = win_integration.download_and_apply_update("https://x/y.zip", good_sha)
-    assert result == str(exe)
+    staged = win_integration.stage_update("https://x/y.zip", hashlib.sha256(zip_bytes).hexdigest())
+    assert staged == str(tmp_path / "TruckDash.new.exe")
+    # Lo nuevo queda al lado; el que corre sigue intacto hasta que lo pise el
+    # ayudante desde afuera.
+    assert (tmp_path / "TruckDash.new.exe").read_bytes() == b"new exe"
+    assert exe.read_bytes() == b"old exe"
+
+
+def test_finish_update_replaces_the_target_and_launches_it(tmp_path, monkeypatch):
+    exe = tmp_path / "TruckDash.exe"
+    exe.write_bytes(b"old exe")
+    staged = tmp_path / "TruckDash.new.exe"
+    staged.write_bytes(b"new exe")
+    monkeypatch.setattr(win_integration, "exe_path", lambda: str(staged))
+
+    waited = []
+    monkeypatch.setattr(win_integration, "wait_for_process", lambda pid, timeout=0: waited.append(pid) or True)
+    launched = []
+    monkeypatch.setattr(win_integration.subprocess, "Popen", lambda args, **kw: launched.append(args))
+
+    assert win_integration.finish_update(str(exe), 4321, ["--autostart"]) == 0
+    assert waited == [4321]           # espera al viejo, no duerme un rato fijo
     assert exe.read_bytes() == b"new exe"
-    assert (tmp_path / "TruckDash.exe.old").read_bytes() == b"old exe"
+    assert launched == [[str(exe), "--autostart"]]
+
+
+def test_finish_update_retries_while_the_file_is_locked(tmp_path, monkeypatch):
+    exe = tmp_path / "TruckDash.exe"
+    exe.write_bytes(b"old exe")
+    staged = tmp_path / "TruckDash.new.exe"
+    staged.write_bytes(b"new exe")
+    monkeypatch.setattr(win_integration, "exe_path", lambda: str(staged))
+    monkeypatch.setattr(win_integration, "wait_for_process", lambda pid, timeout=0: True)
+    monkeypatch.setattr(win_integration, "UPDATE_COPY_WAIT", 0)
+    monkeypatch.setattr(win_integration.subprocess, "Popen", lambda args, **kw: None)
+
+    real_copy = win_integration.shutil.copy2
+    intentos = []
+
+    def flaky(src, dst):
+        intentos.append(1)
+        if len(intentos) < 3:
+            raise PermissionError("el antivirus lo tiene tomado")
+        return real_copy(src, dst)
+
+    monkeypatch.setattr(win_integration.shutil, "copy2", flaky)
+    assert win_integration.finish_update(str(exe), None) == 0
+    assert len(intentos) == 3
+    assert exe.read_bytes() == b"new exe"
+
+
+def test_finish_update_gives_up_instead_of_hanging(tmp_path, monkeypatch):
+    exe = tmp_path / "TruckDash.exe"
+    exe.write_bytes(b"old exe")
+    staged = tmp_path / "TruckDash.new.exe"
+    staged.write_bytes(b"new exe")
+    monkeypatch.setattr(win_integration, "exe_path", lambda: str(staged))
+    monkeypatch.setattr(win_integration, "wait_for_process", lambda pid, timeout=0: True)
+    monkeypatch.setattr(win_integration, "UPDATE_COPY_WAIT", 0)
+    monkeypatch.setattr(win_integration, "UPDATE_COPY_TRIES", 3)
+    launched = []
+    monkeypatch.setattr(win_integration.subprocess, "Popen", lambda args, **kw: launched.append(args))
+
+    def always_locked(src, dst):
+        raise PermissionError("nunca se suelta")
+
+    monkeypatch.setattr(win_integration.shutil, "copy2", always_locked)
+    # Devuelve error en vez de quedarse esperando, y no arranca nada roto.
+    assert win_integration.finish_update(str(exe), None) == 1
+    assert exe.read_bytes() == b"old exe"
+    assert launched == []
+
+
+def test_cleanup_removes_both_leftovers(tmp_path, monkeypatch):
+    exe = tmp_path / "TruckDash.exe"
+    exe.write_bytes(b"exe")
+    monkeypatch.setattr(win_integration, "exe_path", lambda: str(exe))
+    (tmp_path / "TruckDash.exe.old").write_bytes(b"viejo")
+    (tmp_path / "TruckDash.new.exe").write_bytes(b"ayudante")
 
     win_integration.cleanup_old_exe()
     assert not (tmp_path / "TruckDash.exe.old").exists()
+    assert not (tmp_path / "TruckDash.new.exe").exists()
+    assert exe.exists()
 
 
 def test_child_environment_drops_pyinstaller_internals(monkeypatch):
@@ -145,3 +250,368 @@ def test_child_environment_drops_pyinstaller_internals(monkeypatch):
     assert "_MEIPASS2" not in env
     assert not any(k.startswith("_PYI_") for k in env)
     assert env["PATH_KEEP_ME"] == "1"
+
+
+def test_same_dir_reconoce_la_misma_carpeta_por_dos_rutas(tmp_path):
+    r"""Bajo Proton, Wine expone la misma carpeta de Linux por Z:\ y por
+    cualquier letra mapeada. Comparando cadenas, la deteccion automatica y la
+    carpeta agregada a mano daban dos entradas del mismo juego: un tester
+    quedo con 4 para 2 juegos."""
+    import os
+    real = tmp_path / "Euro Truck Simulator 2" / "bin" / "win_x64"
+    real.mkdir(parents=True)
+    assert plugin_installer.same_dir(str(real), str(real)) is True
+    # La misma carpeta escrita distinto: con separadores redundantes, con
+    # un ".." en el medio y con otra capitalizacion.
+    otra = os.path.join(str(tmp_path), "Euro Truck Simulator 2", "bin", "..", "bin", "win_x64")
+    assert plugin_installer.same_dir(str(real), otra) is True
+    # Capitalizacion distinta: solo es la misma carpeta si el sistema de
+    # archivos no distingue mayusculas. En Linux SI las distingue, y ahi dos
+    # rutas que difieren en capitalizacion son dos carpetas distintas de
+    # verdad: darlas por iguales seria el error, no el acierto. Se pregunta
+    # por el sistema de archivos en vez de por el sistema operativo.
+    sin_distinguir = os.path.exists(str(real).upper())
+    assert plugin_installer.same_dir(str(real), str(real).upper()) is sin_distinguir
+    # Y dos carpetas distintas siguen siendo distintas.
+    otra_real = tmp_path / "American Truck Simulator" / "bin" / "win_x64"
+    otra_real.mkdir(parents=True)
+    assert plugin_installer.same_dir(str(real), str(otra_real)) is False
+
+
+def test_same_dir_no_explota_con_rutas_que_no_existen():
+    """samefile necesita que los dos existan; si no, se cae a comparar texto
+    en vez de tirar una excepcion en medio del listado de juegos."""
+    assert plugin_installer.same_dir("/no/existe/a", "/no/existe/b") is False
+    assert plugin_installer.same_dir("/no/existe/a", "/no/existe/a") is True
+
+
+def _fake_install(raiz, nombre, con_exe=True, con_plugin=False):
+    """Arma <raiz>/steamapps/common/<nombre>/bin/win_x64 y devuelve esa ruta."""
+    bin_dir = raiz / "steamapps" / "common" / nombre / "bin" / "win_x64"
+    bin_dir.mkdir(parents=True)
+    if con_exe:
+        exe = "eurotrucks2.exe" if "Euro" in nombre else "amtrucks.exe"
+        (bin_dir / exe).write_bytes(b"MZ")
+    if con_plugin:
+        (bin_dir / "plugins").mkdir()
+        (bin_dir / "plugins" / plugin_installer.PLUGIN_DLL_NAME).write_bytes(b"dll")
+    return bin_dir
+
+
+def test_tiene_ejecutable_distingue_una_carpeta_fantasma(tmp_path):
+    r"""Al desinstalar, Steam borra lo suyo pero NO la carpeta plugins\ que
+    creamos nosotros, asi que el arbol sobrevive. Esa copia no es un juego."""
+    viva = _fake_install(tmp_path, "American Truck Simulator")
+    fantasma = _fake_install(tmp_path / "vieja", "American Truck Simulator",
+                             con_exe=False, con_plugin=True)
+    assert os.path.isdir(str(fantasma))  # el directorio existe igual
+    assert plugin_installer.tiene_ejecutable(str(viva)) is True
+    assert plugin_installer.tiene_ejecutable(str(fantasma)) is False
+
+
+def test_find_game_installs_ignora_las_carpetas_sin_juego(tmp_path, monkeypatch):
+    """Es el reporte de Kesh: ATS listado varias veces, una de ellas una copia
+    que ya no esta instalada."""
+    buena = tmp_path / "biblioteca"
+    vieja = tmp_path / "vieja"
+    _fake_install(buena, "American Truck Simulator")
+    _fake_install(vieja, "American Truck Simulator", con_exe=False, con_plugin=True)
+    monkeypatch.setattr(plugin_installer, "steam_library_paths",
+                        lambda: [str(buena), str(vieja)])
+    encontrados = plugin_installer.find_game_installs()
+    assert len(encontrados) == 1
+    assert plugin_installer.same_dir(
+        encontrados[0]["bin_dir"],
+        str(buena / "steamapps" / "common" / "American Truck Simulator" / "bin" / "win_x64"))
+
+
+def test_find_game_installs_no_repite_la_misma_biblioteca(tmp_path, monkeypatch):
+    """La raiz de Steam aparece por el registro y otra vez en el .vdf."""
+    lib = tmp_path / "Steam"
+    _fake_install(lib, "American Truck Simulator")
+    _fake_install(lib, "Euro Truck Simulator 2")
+    monkeypatch.setattr(plugin_installer, "steam_library_paths",
+                        lambda: [str(lib), str(lib), os.path.join(str(lib), "otra", "..")])
+    encontrados = plugin_installer.find_game_installs()
+    assert sorted(i["game"] for i in encontrados) == ["ats", "ets2"]
+
+
+def test_find_game_installs_si_acepta_dos_copias_de_verdad(tmp_path, monkeypatch):
+    """Dos instalaciones reales en bibliotecas distintas son dos entradas
+    legitimas: lo que se saca son las fantasma, no las repetidas de verdad."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    _fake_install(a, "American Truck Simulator")
+    _fake_install(b, "American Truck Simulator")
+    monkeypatch.setattr(plugin_installer, "steam_library_paths", lambda: [str(a), str(b)])
+    encontrados = plugin_installer.find_game_installs()
+    assert len(encontrados) == 2
+    # Y como se llaman igual, la UI necesita la carpeta para distinguirlas.
+    assert encontrados[0]["bin_dir"] != encontrados[1]["bin_dir"]
+
+
+def test_describe_install_marca_el_origen(tmp_path):
+    bin_dir = _fake_install(tmp_path, "American Truck Simulator")
+    auto = plugin_installer.describe_install("ats", str(bin_dir))
+    mano = plugin_installer.describe_install("ats", str(bin_dir), origen="manual")
+    assert auto["origen"] == "steam"
+    assert mano["origen"] == "manual"
+
+
+def test_quit_on_game_close_por_defecto_solo_bajo_proton(monkeypatch):
+    """Bajo Proton hay un wineserver por prefijo y no termina hasta que se va
+    el ultimo proceso de Wine. Como el cliente tiene que vivir en el prefijo
+    del juego, mientras siga abierto Steam muestra el juego como "Running" y
+    no deja volver a lanzarlo. En Windows no pasa y quedarse en la bandeja es
+    lo que conviene."""
+    monkeypatch.setattr(win_integration, "load_settings", lambda: {})
+    monkeypatch.setattr(win_integration, "is_wine", lambda: True)
+    assert win_integration.quit_on_game_close_enabled() is True
+    monkeypatch.setattr(win_integration, "is_wine", lambda: False)
+    assert win_integration.quit_on_game_close_enabled() is False
+
+
+def test_quit_on_game_close_respeta_lo_que_eligio_el_usuario(monkeypatch):
+    """Elegido a mano gana sobre el default, en los dos sentidos."""
+    monkeypatch.setattr(win_integration, "is_wine", lambda: True)
+    monkeypatch.setattr(win_integration, "load_settings",
+                        lambda: {"quit_on_game_close": False})
+    assert win_integration.quit_on_game_close_enabled() is False
+    monkeypatch.setattr(win_integration, "is_wine", lambda: False)
+    monkeypatch.setattr(win_integration, "load_settings",
+                        lambda: {"quit_on_game_close": True})
+    assert win_integration.quit_on_game_close_enabled() is True
+
+
+def test_is_wine_detecta_por_ntdll(monkeypatch):
+    """Wine agrega wine_get_version a ntdll; Windows no la tiene."""
+    import ctypes
+
+    class FalsoNtdll:
+        wine_get_version = lambda self: "9.0"  # noqa: E731
+
+    class FalsoWindll:
+        ntdll = FalsoNtdll()
+
+    monkeypatch.setattr(win_integration, "_es_wine", None)
+    monkeypatch.setattr(ctypes, "windll", FalsoWindll(), raising=False)
+    assert win_integration.is_wine() is True
+
+    class SinWine:
+        pass
+
+    class WindllWindows:
+        ntdll = SinWine()
+
+    monkeypatch.setattr(win_integration, "_es_wine", None)
+    monkeypatch.setattr(ctypes, "windll", WindllWindows(), raising=False)
+    assert win_integration.is_wine() is False
+
+
+# ------------------------------------------------- abrir el navegador
+# Bajo Proton, webbrowser.open (ShellExecute adentro del proceso) cerraba el
+# cliente entero sin dejar rastro (issue #12).
+
+URL_TABLERO = "https://trucksim-dash.com/app/?backend=wss%3A%2F%2Fx&code=AB12CD34"
+
+
+def test_bajo_wine_el_navegador_se_abre_en_otro_proceso(monkeypatch):
+    lanzados = []
+    monkeypatch.setattr(win_integration, "_es_wine", True)
+    monkeypatch.setattr(win_integration.webbrowser, "open",
+                        lambda *a, **k: pytest.fail("bajo Wine no se usa webbrowser"))
+    monkeypatch.setattr(win_integration.subprocess, "Popen",
+                        lambda args, **kw: lanzados.append((args, kw)))
+    monkeypatch.setenv("SystemRoot", r"C:\windows")
+
+    assert win_integration.open_in_browser(URL_TABLERO) is True
+
+    (args, kw), = lanzados
+    assert os.path.basename(args[0]).lower() == "winebrowser.exe"
+    assert "system32" in args[0].lower()
+    # La URL entera, como un solo argumento: con "&code=" cortado el tablero
+    # abre sin codigo.
+    assert args[1:] == [URL_TABLERO]
+    assert kw.get("stdin") is win_integration.subprocess.DEVNULL
+
+
+def test_bajo_wine_sin_winebrowser_avisa_que_no_se_abrio(monkeypatch):
+    def falla(args, **kw):
+        raise FileNotFoundError(args[0])
+    monkeypatch.setattr(win_integration, "_es_wine", True)
+    monkeypatch.setattr(win_integration.subprocess, "Popen", falla)
+    assert win_integration.open_in_browser(URL_TABLERO) is False
+
+
+def test_en_windows_se_sigue_usando_webbrowser(monkeypatch):
+    abiertos = []
+    monkeypatch.setattr(win_integration, "_es_wine", False)
+    monkeypatch.setattr(win_integration.webbrowser, "open",
+                        lambda url: abiertos.append(url) or True)
+    monkeypatch.setattr(win_integration.subprocess, "Popen",
+                        lambda *a, **k: pytest.fail("en Windows no hace falta otro proceso"))
+    assert win_integration.open_in_browser(URL_TABLERO) is True
+    assert abiertos == [URL_TABLERO]
+
+
+# ------------------------------------------ actualizar el plugin solo
+# Actualizar el cliente no cambiaba el plugin del juego: solo lo hacia quien
+# abriera Setup y apretara "Reemplazar". Con los trabajos con auto de ATS
+# 1.61 eso dejaba a casi todos con el plugin que no los lee. Pero el
+# scs-telemetry.dll no se toca: la 1.5.21 lo reemplazaba y Trucky, que trae
+# el mismo, dejaba de arrancar.
+
+def _juego(tmp_path, monkeypatch, nombre="game", nuestro=None, otro=None):
+    nuevo = b"MZ plugin nuevo"
+    vendor = tmp_path / "vendor" / "truckdash-telemetry.dll"
+    vendor.parent.mkdir(exist_ok=True)
+    vendor.write_bytes(nuevo)
+    monkeypatch.setattr(plugin_installer, "bundled_dll_path", lambda: str(vendor))
+    monkeypatch.setattr(plugin_installer, "PLUGIN_DLL_SHA256", hashlib.sha256(nuevo).hexdigest())
+    bin_dir = tmp_path / nombre / "bin" / "win_x64"
+    (bin_dir / "plugins").mkdir(parents=True)
+    if nuestro is not None:
+        (bin_dir / "plugins" / "truckdash-telemetry.dll").write_bytes(nuestro)
+    if otro is not None:
+        (bin_dir / "plugins" / "scs-telemetry.dll").write_bytes(otro)
+    return plugin_installer.describe_install("ats", str(bin_dir)), nuevo
+
+
+def test_actualiza_el_nuestro_y_nunca_toca_el_scs_telemetry(tmp_path, monkeypatch):
+    viejo, _ = _juego(tmp_path, monkeypatch, "viejo", nuestro=b"MZ nuestro de antes")
+    trucky, nuevo = _juego(tmp_path, monkeypatch, "trucky", otro=b"MZ el de Trucky")
+    nada, _ = _juego(tmp_path, monkeypatch, "nada")
+    al_dia, _ = _juego(tmp_path, monkeypatch, "al_dia", nuestro=nuevo, otro=b"MZ el de Trucky")
+    assert viejo["state"] == "outdated"
+    assert trucky["state"] == "missing" and trucky["other_plugin"]
+    assert nada["state"] == "missing" and not nada["other_plugin"]
+    assert al_dia["state"] == "installed"
+
+    hechos = plugin_installer.update_own_plugin([viejo, trucky, nada, al_dia])
+
+    assert hechos == [viejo["bin_dir"], trucky["bin_dir"]]
+    for install in (viejo, trucky):
+        assert open(install["plugin_path"], "rb").read() == nuevo
+        assert install["state"] == "installed"
+    # El de la otra app sigue igual, byte a byte, al lado del nuestro.
+    otro = os.path.join(trucky["bin_dir"], "plugins", "scs-telemetry.dll")
+    assert open(otro, "rb").read() == b"MZ el de Trucky"
+    assert sorted(os.listdir(os.path.dirname(otro))) == ["scs-telemetry.dll", "truckdash-telemetry.dll"]
+    # Sin ningun plugin no se instala solo: lo decide el usuario en Setup.
+    assert os.listdir(os.path.join(nada["bin_dir"], "plugins")) == []
+    assert nada["state"] == "missing"
+
+
+def test_el_instalador_no_escribe_nunca_el_scs_telemetry(tmp_path, monkeypatch):
+    """Ni con el boton de Setup: install_plugin solo escribe el nuestro."""
+    install, _ = _juego(tmp_path, monkeypatch, otro=b"MZ el de Trucky")
+    escrituras = []
+    copiar = plugin_installer.shutil.copyfile
+    reemplazar = plugin_installer.os.replace
+    monkeypatch.setattr(plugin_installer.shutil, "copyfile",
+                        lambda src, dst: escrituras.append(dst) or copiar(src, dst))
+    monkeypatch.setattr(plugin_installer.os, "replace",
+                        lambda src, dst: escrituras.append(dst) or reemplazar(src, dst))
+    plugin_installer.install_plugin(install["bin_dir"])
+    assert escrituras
+    assert not [e for e in escrituras if os.path.basename(e).startswith("scs-telemetry")]
+
+
+def test_con_el_juego_abierto_no_se_actualiza_y_no_deja_basura(tmp_path, monkeypatch):
+    """En Windows la DLL cargada no se puede reemplazar: tiene que quedar la
+    de antes, entera, y reintentarse despues."""
+    viejo = b"MZ plugin de antes"
+    install, _ = _juego(tmp_path, monkeypatch, nuestro=viejo)
+
+    def en_uso(src, dst):
+        raise PermissionError(5, "Access is denied", dst)
+    monkeypatch.setattr(plugin_installer.os, "replace", en_uso)
+
+    assert plugin_installer.update_own_plugin([install]) == []
+    assert open(install["plugin_path"], "rb").read() == viejo
+    assert install["state"] == "outdated"
+    assert os.listdir(os.path.dirname(install["plugin_path"])) == ["truckdash-telemetry.dll"]
+
+
+def test_install_plugin_no_escribe_encima_del_instalado(tmp_path, monkeypatch):
+    """Bajo Proton el juego abierto tiene la DLL mapeada: escribir adentro
+    del mismo archivo lo puede tirar. Tiene que ser un archivo nuevo que
+    reemplaza al otro."""
+    install, nuevo = _juego(tmp_path, monkeypatch, nuestro=b"MZ plugin de antes")
+    escrituras = []
+    copiar = plugin_installer.shutil.copyfile
+    monkeypatch.setattr(plugin_installer.shutil, "copyfile",
+                        lambda src, dst: escrituras.append(dst) or copiar(src, dst))
+    plugin_installer.install_plugin(install["bin_dir"])
+    assert install["plugin_path"] not in escrituras
+    assert open(install["plugin_path"], "rb").read() == nuevo
+
+
+# ---------------------------------------------------- tools/pin_plugin.py
+
+def _pin_plugin():
+    import importlib.util
+    ruta = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "pin_plugin.py")
+    spec = importlib.util.spec_from_file_location("pin_plugin", ruta)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_pin_plugin_fija_el_hash(tmp_path):
+    """Con CRLF tambien: es como llega el archivo al runner de Windows."""
+    pin = _pin_plugin()
+    viejo = "a" * 64
+    for salto in ("\n", "\r\n"):
+        fuente = salto.join([
+            "# algo antes",
+            f'PLUGIN_DLL_SHA256 = "{viejo}"',
+            "",
+        ])
+        installer = tmp_path / "plugin_installer.py"
+        installer.write_bytes(fuente.encode())
+        dll = tmp_path / "nueva.dll"
+        dll.write_bytes(b"MZ nueva")
+        vendor = tmp_path / "vendor.dll"
+
+        sha = pin.fijar(str(dll), str(vendor), str(installer))
+
+        texto = installer.read_bytes().decode()
+        assert texto == fuente.replace(viejo, sha)
+        assert vendor.read_bytes() == b"MZ nueva"
+
+
+def test_pin_plugin_escribe_la_dll_con_nuestro_nombre():
+    pin = _pin_plugin()
+    assert os.path.basename(pin.VENDOR) == plugin_installer.PLUGIN_DLL_NAME
+
+
+def test_rutas_de_linux_vistas_desde_wine():
+    assert plugin_installer.unix_a_wine("/run/media/tw/SSD") == r"Z:\run\media\tw\SSD"
+    assert plugin_installer.unix_a_wine(r"D:\Games") == r"D:\Games"
+
+
+def test_el_vdf_de_steam_para_linux_trae_rutas_de_linux():
+    vdf = '"path"\t\t"/run/media/tw/Games/SteamLibrary"\n"path"\t\t"D:\\\\Games\\\\Steam"'
+    rutas = plugin_installer.parse_libraryfolders(vdf)
+    assert os.path.normpath(r"Z:\run\media\tw\Games\SteamLibrary") in rutas
+    assert os.path.normpath(r"D:\Games\Steam") in rutas
+
+
+def test_bajo_proton_se_busca_el_steam_de_linux():
+    """Issue #7 (Nobara): el Steam del registro de Wine no tiene los juegos."""
+    env = {"HOME": "/home/tw",
+           "STEAM_COMPAT_CLIENT_INSTALL_PATH": "/home/tw/.local/share/Steam",
+           "STEAM_COMPAT_DATA_PATH": "/run/media/tw/G/SteamLibrary/steamapps/compatdata/270880"}
+    raices = plugin_installer.linux_steam_roots(env, existe=lambda r: True)
+    assert raices[0] == r"Z:\home\tw\.local\share\Steam"
+    assert r"Z:\run\media\tw\G\SteamLibrary" in raices
+    assert r"Z:\home\tw\.steam\steam" in raices
+    assert len(raices) == len(set(raices))
+    # Solo las que existen
+    assert plugin_installer.linux_steam_roots(env, existe=lambda r: r.endswith("SteamLibrary")) == [r"Z:\run\media\tw\G\SteamLibrary"]
+
+
+def test_en_windows_no_se_suman_rutas_de_linux():
+    assert plugin_installer.linux_steam_roots({"HOME": r"C:\Users\x"}, existe=lambda r: True) == []
+    assert plugin_installer.linux_steam_roots({}, existe=lambda r: True) == []
+

@@ -3,8 +3,24 @@ __pycache__/
 .venv/
 client/build/
 client/dist/
+client/version_info.txt
 
 docs/maps/
 client/settings.json
 client/keybinds.json
 client/truckdash.log
+client/cuenta-pendiente.json
+
+# Config local del preview de Claude Code
+.claude/
+.e2e-update/
+docs/assets/demo.gif
+
+# Salidas de compilar el plugin (plugin/)
+plugin/scs-telemetry/vs2012/.vs/
+plugin/scs-telemetry/vs2012/x64/
+plugin/scs-telemetry/vs2012/Release/
+plugin/scs-telemetry/vs2012/Debug/
+
+# Armador de mapas armado en local (builder/build.sh)
+builder/dist/

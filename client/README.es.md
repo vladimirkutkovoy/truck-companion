@@ -7,8 +7,9 @@ gratuito para Euro Truck Simulator 2 y American Truck Simulator.
 
 - Lee la telemetría en vivo del juego (posición, velocidad, combustible,
   carga, etc.) a través del **SDK de telemetría oficial de SCS Software**,
-  mediante un segmento de memoria compartida (`Local\SCSTelemetry`) que el
-  propio juego crea cuando el plugin del SDK está instalado.
+  mediante un segmento de memoria compartida que publica el plugin de
+  telemetría adentro del juego (`Local\TruckDashTelemetry` el que instala
+  Truck Dash, `Local\SCSTelemetry` el estándar que usan otras apps).
 - Envía esos datos por una conexión WebSocket a un backend de relay
   (alojado en Railway), que los reenvía a tu navegador en
   [trucksim-dash.com](https://trucksim-dash.com).
@@ -52,8 +53,10 @@ La primera vez se abre una ventana de **Setup & status** (la podés volver a
 abrir cuando quieras desde el ícono de la bandeja). Encuentra tu instalación
 de ETS2 / ATS a través de Steam e instala el plugin del SDK de telemetría de
 SCS en el juego por vos con un click
-(`<juego>\bin\win_x64\plugins\scs-telemetry.dll`). Reiniciá el juego si
-estaba abierto. ¿Instalación fuera de Steam? Usá "Add game folder..." y
+(`<juego>\bin\win_x64\plugins\truckdash-telemetry.dll`). Reiniciá el juego
+si estaba abierto. Nunca toca un `scs-telemetry.dll` que ya esté: otras apps
+(Trucky, por ejemplo) traen ese archivo y revisan que nadie lo cambie, así
+que Truck Dash instala el suyo al lado y andan las dos. ¿Instalación fuera de Steam? Usá "Add game folder..." y
 elegí la carpeta del juego.
 
 La misma ventana muestra el estado en vivo (esperando el juego / arriba del
@@ -67,9 +70,31 @@ Si tu celular o tablet está en la misma WiFi que la PC, la ventana de Setup
 también muestra una **dirección LAN** (con un código QR para escanear). Eso
 abre el tablero servido directo por el cliente (`http://<ip-de-tu-pc>:27765/app/`)
 con un WebSocket directo — la menor latencia, sin código de pairing, y sigue
-funcionando aunque se corte internet. Windows puede preguntar una vez si
-permitís TruckDash en el firewall (redes privadas) — tocá Permitir. El modo
-cloud con código sigue funcionando al mismo tiempo.
+funcionando aunque se corte internet. El modo cloud con código sigue
+funcionando al mismo tiempo.
+
+**El modo LAN usa dos puertos y hacen falta los dos abiertos:**
+
+| puerto | para qué | si está cerrado |
+|---|---|---|
+| 27765 (HTTP) | sirve la página del tablero | la página no carga |
+| 27766 (WebSocket) | manda la telemetría en vivo | la página carga y queda vacía |
+
+La segunda fila es la que confunde: con solo el 27765 abierto, el tablero
+aparece y se queda sin datos, que parece un cliente roto y no un puerto
+cerrado.
+
+En Windows suele ser automático: pregunta una vez si permitís TruckDash en
+el firewall para redes privadas, y Permitir cubre los dos. En Linux hay que
+abrirlos a mano, por ejemplo:
+
+```bash
+sudo ufw allow 27765/tcp
+sudo ufw allow 27766/tcp
+```
+
+Los dos se pueden cambiar con las variables de entorno
+`TRUCKDASH_HTTP_PORT` y `TRUCKDASH_WS_PORT` si esos números chocan con algo.
 
 ### Windows SmartScreen ("aplicación no reconocida")
 
@@ -87,8 +112,10 @@ Si preferís copiar el plugin vos mismo: bajalo de
 y copiá **solo el archivo `Win64\scs-telemetry.dll`** en la carpeta de
 instalación de tu juego, dentro de `bin\win_x64\plugins\` (creá esa carpeta
 `plugins` si no existe). El error más común es dejar el `.dll` directo en
-`bin\win_x64\` en vez de la subcarpeta `plugins\`. El cliente trae el mismo
-archivo adentro (`vendor/scs-telemetry.dll`, licencia MIT).
+`bin\win_x64\` en vez de la subcarpeta `plugins\`. Ese plugin sirve para
+todo menos los trabajos con auto de ATS; el cliente trae adentro un fork que
+también los lee (`vendor/truckdash-telemetry.dll`, licencia MIT, fuente en
+`plugin/`).
 
 Si el tablero sigue sin mostrar datos, hacé click derecho en el ícono de la
 bandeja y elegí **"Show log file (troubleshooting)"** — te va a decir si el
@@ -114,6 +141,124 @@ probabilidad:
    automáticamente" activado, puede desincronizarse si hace tiempo que no
    sincroniza. Verificá que la fecha y hora sean realmente correctas (no
    solo que esté en "automático").
+
+### Proxy, VPN o "ping booster"
+
+El juego le pasa la telemetría a Truck Dash por memoria en tu propia PC,
+así que un proxy puesto sobre el juego no cambia nada. Lo único que va por
+internet es Truck Dash hablando con el relay, y Truck Dash respeta el proxy
+configurado en Windows (o `HTTPS_PROXY`): un proxy puesto para todo el
+sistema lo agarra también.
+
+Desde la 1.5.19 el cliente prueba primero como dice el sistema y, si falla
+y hay un proxy del sistema, prueba sin él. El log dice por dónde fue: una
+línea `System proxy for the relay: ...` al arrancar, y `next attempt goes
+direct, without the system proxy` cuando tuvo que saltearlo. Si no conecta
+de ninguna de las dos formas, las líneas siguientes dicen por qué.
+
+### Linux (con Proton)
+
+El cliente anda bajo Proton y ya hay un tester con todo funcionando:
+instalacion del plugin, codigo de pairing y modo LAN. Todavia no hay una
+version nativa de Linux.
+
+La regla que importa: **el cliente tiene que correr en el mismo prefijo de
+Proton que el juego.** La telemetria que lee es un bloque de memoria
+compartida con nombre, y en Wine esos nombres viven en el wineserver de cada
+prefijo. Un cliente en otro prefijo no ve nada: ni error ni datos, silencio.
+
+**Primero el juego, despues el cliente.** Steam corre una sola cosa por
+prefijo a la vez, asi que lanzar los dos juntos desde Steam no funciona.
+
+En [`linux/`](linux/) hay dos lanzadores listos, uno por juego:
+`truckdash-ets2.desktop` y `truckdash-ats.desktop`. Apuntan al prefijo que
+Steam crea para cada juego (`compatdata/227300` para ETS2, `compatdata/270880`
+para ATS), asi que andan tal cual si jugas con el prefijo por defecto de
+Steam. Se usan una vez que el juego ya esta abierto.
+
+Las rutas de un `.desktop` no pasan por un shell, asi que `$HOME` y `~` no se
+expanden: los archivos traen `YOURUSER` en su lugar. Se reemplaza por tu
+usuario y se instalan, desde la carpeta donde los guardaste:
+
+```sh
+sed -i "s/YOURUSER/$USER/g" truckdash-*.desktop
+cp truckdash-*.desktop ~/.local/share/applications/
+```
+
+Si ademas los queres en el escritorio, copialos a `~/Desktop`, corre
+`chmod +x ~/Desktop/truckdash-*.desktop` y, en GNOME, clic derecho y "Permitir
+lanzar".
+
+Cambia las rutas si las tuyas son otras: un prefijo propio en vez del del
+juego, otro build de Proton, o `TruckDash.exe` en otro lado que no sea
+`~/Documents/truckdash/`.
+
+Si preferis lanzar todo de una desde Steam, va esto en las opciones de inicio
+del juego. Steam corre esta linea en un shell, asi que aca `$HOME` si anda, y
+como el export vale tambien para el juego, los dos quedan en el mismo prefijo.
+El sleep le da tiempo al juego a levantar el prefijo primero:
+
+```
+export STEAM_COMPAT_DATA_PATH="$HOME/Prefixes/TuPrefijo"; export STEAM_COMPAT_CLIENT_INSTALL_PATH="$HOME/.local/share/Steam"; (sleep 20 && "$HOME/.local/share/Steam/compatibilitytools.d/Proton-GE Latest/proton" run "$HOME/Documents/truckdash/TruckDash.exe") & exec %command%
+```
+
+Si usas algun envoltorio, va al final, por ejemplo
+`exec gamescope -W 1920 -H 1080 -r 120 -- %command%`.
+
+**Si ya tenes opciones de lanzamiento** (mangohud, `PROTON_LOG=1`,
+overrides de DLL para un mod), no pueden quedar adelante de la linea. La
+forma de siempre, `VAR=x mangohud %command%`, anda porque Steam le agrega el
+juego al final; con la parte de Truck Dash en el medio, `mangohud` seguido
+de `(` es un error de sintaxis del shell y no arranca nada, ni el juego.
+Hay que moverlas:
+
+- Las variables que tienen que llegarles a los dos (el prefijo,
+  `PROTON_LOG`) van en el `export` del principio.
+- Las variables y envoltorios que son solo para el juego van despues de
+  `exec`, con `env`, asi no le llegan a Truck Dash:
+
+```
+export STEAM_COMPAT_DATA_PATH="$HOME/.local/share/Steam/steamapps/compatdata/270880" STEAM_COMPAT_CLIENT_INSTALL_PATH="$HOME/.local/share/Steam" PROTON_LOG=1; (sleep 20 && "$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton11-7/proton" run "$HOME/Documents/truckdash/TruckDash.exe") & exec env MANGOHUD_CONFIG="fps_limit=60" WINEDLLOVERRIDES="dxgi,dinput8=n,b" mangohud %command%
+```
+
+Esa es para ATS (`270880`); para ETS2, `227300`. Con `PROTON_LOG=1`, Proton
+escribe `steam-<app id>.log` en tu carpeta personal: es lo primero que hay
+que mirar si arranca el juego y Truck Dash no.
+
+**Lutris y protontricks no anduvieron para esto en las pruebas**, aun
+apuntados al prefijo del juego con el mismo Proton. Arrancan Wine con su
+propia configuracion, y el cliente terminaba en otro wineserver que el
+juego: corria pero nunca veia el juego (su log no listaba ninguna ventana
+del juego), o el que arrancaba segundo se colgaba. Lanzalo con el
+`proton run` del propio Proton, como arriba.
+
+Probado con **GE-Proton11-7**. El nombre de la carpeta dentro de
+`compatibilitytools.d/` es el de tu build de Proton; los ejemplos de arriba
+usan el de la maquina donde se probo.
+
+Detalles de esa instalacion:
+
+- El plugin se instala normal. Proton corre la version Windows del juego, asi
+  que el `.dll` de Windows es el archivo correcto.
+- Si la lista de juegos muestra el mismo juego dos veces, actualiza a 1.5.14
+  o mas nuevo: las versiones anteriores comparaban las rutas como texto, y
+  Wine llega a la misma carpeta por mas de un camino.
+- El tablero puede tardar un poco mas en cargar el mapa en el celular que en
+  la PC. Eso es la descarga de los datos del mapa, no el prefijo.
+- Al cerrar el juego, Steam lo sigue mostrando como "Running" y no te deja
+  volver a lanzarlo hasta que cierres tambien Truck Dash. Es por la misma
+  razon por la que el cliente tiene que vivir en el prefijo del juego: hay un
+  wineserver por prefijo y no termina hasta que se va el ultimo proceso de
+  Wine, asi que el wrapper de Proton que lanzo Steam se queda esperando.
+  Desde 1.5.15 el cliente se cierra solo cuando se cierra el juego, que es lo
+  que suelta el prefijo. Es una casilla en Setup, activada por defecto solo
+  bajo Proton. Espera a que la memoria compartida de la telemetria lleve un
+  minuto ausente, asi estar en un menu o en pausa no cuenta como cerrar.
+
+**La version nativa de Linux del juego** es otra historia: necesita un plugin
+de telemetria compilado para Linux, que existe como build de prueba pero
+todavia nadie confirmo contra el juego, y no hay cliente nativo. Si jugas la
+nativa y queres ayudar a probar, abri un issue.
 
 ## Compilarlo vos mismo
 

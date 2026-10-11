@@ -23,15 +23,14 @@ import re
 import sys
 import time
 
-import pydirectinput
-import truck_telemetry
+IS_WINDOWS = sys.platform == "win32"
+import keys_compat
+import telemetry_compat
+import window_compat
 import websockets
-from urllib.request import urlopen, Request
+from urllib.request import Request
 
-# pydirectinput por defecto pausa 0.1s despues de cada tecla (pensado para
-# macros/automatizacion) - para un boton individual eso se siente como
-# lag, no hace falta ese delay aca.
-pydirectinput.PAUSE = 0
+import red
 
 # Usa el almacen de certificados nativo de Windows/macOS/Linux para validar
 # TLS, en vez del bundle de certificados que trae empaquetado Python (via
@@ -55,7 +54,8 @@ RECONNECT_DELAY_SECONDS = 3.0
 # Se bumpea a mano en cada release nueva del .exe (junto con /admin/stats/seed
 # {"latest_client_version": "..."} en el backend) - se manda en cada payload
 # para que /app pueda avisar si el cliente conectado quedo desactualizado.
-CLIENT_VERSION = "1.5.3"
+CLIENT_VERSION = "1.5.30"
+red.AGENTE = f"TruckDash/{CLIENT_VERSION}"
 
 # Comandos que la web puede mandar para simular una tecla en el juego. Estos
 # son solo el ultimo respaldo si no se pudo detectar nada real - ver
@@ -80,9 +80,15 @@ DEFAULT_KEYBINDS = {
 
 GAME_WINDOW_TITLES = ("Euro Truck Simulator 2", "American Truck Simulator")
 
-_user32 = ctypes.windll.user32
-_kernel32 = ctypes.windll.kernel32
-_shell32 = ctypes.windll.shell32
+# En Linux no existen: las cuatro funciones que los usan (buscar la ventana
+# del juego, traerla al frente, mandar teclas) tienen su propio camino y se
+# resuelven aparte. Sin esto el modulo ni siquiera se puede importar.
+if IS_WINDOWS:
+    _user32 = ctypes.windll.user32
+    _kernel32 = ctypes.windll.kernel32
+    _shell32 = ctypes.windll.shell32
+else:
+    _user32 = _kernel32 = _shell32 = None
 
 # Nombre de nuestra accion -> nombre interno que usa SCS en controls.sii
 # (linea "mix <nombre_scs> `...`"). Se saco leyendo un controls.sii real -
@@ -104,10 +110,10 @@ ACTION_TO_SCS_ACTION = {
 }
 
 # Nombres de tecla que usa SCS en controls.sii -> nombre que espera
-# pydirectinput. No hace falta que sea exhaustivo (solo lo que realmente
+# keys_compat. No hace falta que sea exhaustivo (solo lo que realmente
 # puede terminar asignado a estos comandos), las teclas no listadas se pasan
 # tal cual (funciona para la mayoria de las letras sueltas).
-_SCS_KEY_TO_PYDIRECTINPUT = {
+_SCS_KEY_TO_NOMBRE = {
     "space": "space", "esc": "esc", "tab": "tab", "backspace": "backspace",
     "enter": "enter", "numenter": "enter",
     "del": "delete", "ins": "insert", "home": "home", "end": "end",
@@ -122,15 +128,21 @@ _SCS_KEY_TO_PYDIRECTINPUT = {
     "numplus": "add", "numminus": "subtract", "nummultiply": "multiply", "numslash": "divide",
 }
 for _i in range(10):
-    _SCS_KEY_TO_PYDIRECTINPUT[f"key{_i}"] = str(_i)
+    _SCS_KEY_TO_NOMBRE[f"key{_i}"] = str(_i)
 for _i in range(1, 13):
-    _SCS_KEY_TO_PYDIRECTINPUT[f"f{_i}"] = f"f{_i}"
+    _SCS_KEY_TO_NOMBRE[f"f{_i}"] = f"f{_i}"
 
 _MIX_LINE_RE = re.compile(r'"mix\s+([a-zA-Z0-9_]+)\s+`([^`]*)`"')
 _KEYBOARD_BIND_RE = re.compile(r"keyboard\.([a-zA-Z0-9_]+)")
 
 
 def documents_folder() -> str:
+    """Carpeta donde el juego guarda perfiles y game.log.txt, un nivel
+    arriba de "Euro Truck Simulator 2" / "American Truck Simulator"."""
+    if not IS_WINDOWS:
+        # En Linux nativo no hay "Documentos": el juego escribe en
+        # ~/.local/share, con los mismos nombres de carpeta adentro.
+        return window_compat.data_dir()
     # No asumir "~/Documents" - OneDrive puede redirigir la carpeta de
     # Documentos a otro lado (ej. "OneDrive/Documentos"), y ahi es donde el
     # juego realmente guarda los perfiles.
@@ -188,7 +200,7 @@ def detect_map_mods(mods: list) -> dict:
     """{promods, promods_canada, c2c} a partir de nombres/archivos de mods.
     ProMods Europa y sus addons (ME, Maghreb, TGS) cuentan como 'promods';
     'ProMods Canada' es el pack de ATS."""
-    flags = {"promods": False, "promods_canada": False, "c2c": False}
+    flags = {"promods": False, "promods_canada": False, "c2c": False, "rusmap": False, "reforma": False, "roextended": False, "grand_utopia": False, "eu_grand_utopia": False, "canada_expansion": False, "truckersmp": False}
     for mod in mods:
         text = f"{mod.get('file', '')} {mod.get('name', '')}".lower()
         if "promods" in text or "pm-" in text or "cnx-pm" in text:
@@ -198,7 +210,140 @@ def detect_map_mods(mods: list) -> dict:
                 flags["promods"] = True
         if "coast to coast" in text or "coast2coast" in text or re.search(r"c2c", text):
             flags["c2c"] = True
+        if "rusmap" in text:
+            flags["rusmap"] = True
+        # Reforma, Mega Resources, Sierra Nevada y el OtherMaps Patch llevan "reforma" en el nombre
+        if "reforma" in text:
+            flags["reforma"] = True
+        # Roextended: los conectores se llaman ROEX53..., el mapa Hybrid "161Hybrid2v3"
+        if "roex" in text or re.search(r"\d{3}hybrid\d", text):
+            flags["roextended"] = True
+        if "grand utopia" in text or "grandutopia" in text or "grand_utopia" in text:
+            flags["grand_utopia"] = True
+        # European Grand Utopia (Adyox) pega el archipielago al mapa de
+        # Europa, y pide tener tambien el Grand Utopia original cargado. Sin
+        # esta marca aparte la web elegia el Grand Utopia standalone, otro
+        # mapa con otra proyeccion.
+        if "european grand utopia" in text:
+            flags["eu_grand_utopia"] = True
+        # Western/Eastern Canada Expansion (JacobKazias) y sus conectores
+        # ("Western Canada C2C Only Connections"...). No confundir con
+        # ProMods Canada, que no dice "western" ni "eastern".
+        if re.search(r"(western|eastern)[ _-]?canada", text):
+            flags["canada_expansion"] = True
     return flags
+
+
+_TMP_MOUNT_RE = re.compile(r"\[fs\] device .*truckersmp.*\.mp mounted to mod pool", re.IGNORECASE)
+
+
+def is_truckersmp_session(log_text: str) -> bool:
+    """El launcher de TruckersMP monta sus paquetes .mp desde
+    %APPDATA%/TruckersMP/installation/... y el juego lo escribe en el log
+    ("[fs] device C:/.../TruckersMP/installation/data/ets2/mods/data1.mp
+    mounted to mod pool."); en una sesion normal no aparece. Ojo: en esas
+    sesiones el log NO trae la lista "[mods] Active N mods"."""
+    return bool(_TMP_MOUNT_RE.search(log_text))
+
+
+# DLC de mapa: archivo en la carpeta del juego -> id de la web (DLC_LIST en
+# docs/app/pure.js). Steam baja el archivo de un DLC solo si lo tenes (y no
+# lo desactivaste en Steam), asi que con mirar la carpeta alcanza para que
+# las rutas eviten los que no tenes sin preguntar nada. Tabla de
+# truckermudgeon/maps (libs/map/constants.ts) mas South Dakota.
+MAP_DLC_FILES = {
+    "ats": {
+        "dlc_nevada.scs": "nv", "dlc_arizona.scs": "az", "dlc_nm.scs": "nm", "dlc_or.scs": "or",
+        "dlc_wa.scs": "wa", "dlc_ut.scs": "ut", "dlc_id.scs": "id", "dlc_co.scs": "co",
+        "dlc_wy.scs": "wy", "dlc_mt.scs": "mt", "dlc_tx.scs": "tx", "dlc_ok.scs": "ok",
+        "dlc_ks.scs": "ks", "dlc_ne.scs": "ne", "dlc_ar.scs": "ar", "dlc_mo.scs": "mo",
+        "dlc_ia.scs": "ia", "dlc_la.scs": "la", "dlc_il.scs": "il", "dlc_sd.scs": "sd",
+    },
+    "ets2": {
+        "dlc_east.scs": "east", "dlc_north.scs": "north", "dlc_fr.scs": "fr", "dlc_it.scs": "it",
+        "dlc_balt.scs": "balt", "dlc_balkan_e.scs": "blacksea", "dlc_iberia.scs": "iberia",
+        "dlc_balkan_w.scs": "wbalkans", "dlc_greece.scs": "greece", "dlc_polar.scs": "nordic",
+        "dlc_krone.scs": "krone", "dlc_feldbinder.scs": "feldbinder",
+    },
+}
+
+
+def installed_map_dlcs(game_root: str, game: str) -> list | None:
+    """Ids de los DLC de mapa instalados en esa carpeta del juego, ordenados.
+    None si la carpeta no se puede leer (no es lo mismo que no tener ninguno)."""
+    try:
+        nombres = {n.lower() for n in os.listdir(game_root)}
+    except OSError:
+        return None
+    return sorted(i for archivo, i in MAP_DLC_FILES.get(game, {}).items() if archivo in nombres)
+
+
+def read_installed_dlcs(installs: list) -> dict:
+    """{'ats': [ids], 'ets2': [ids]} de las instalaciones encontradas (las de
+    plugin_installer: bin_dir es <juego>/bin/win_x64). Con dos instalaciones
+    del mismo juego, la union. Un juego sin instalacion no aparece."""
+    out = {}
+    for inst in installs or []:
+        game = inst.get("game")
+        if game not in MAP_DLC_FILES or not inst.get("bin_dir"):
+            continue
+        raiz = os.path.dirname(os.path.dirname(os.path.normpath(inst["bin_dir"])))
+        encontrados = installed_map_dlcs(raiz, game)
+        if encontrados is None:
+            continue
+        out[game] = sorted(set(out.get(game, [])) | set(encontrados))
+    return out
+
+
+ACTIVE_MOD_NAMES_MAX = 150
+ACTIVE_MOD_NAME_LEN = 80
+
+
+def active_mod_names(mods: list | None) -> list | None:
+    """Nombres de los mods activos, para reportar un mapa que no conocemos
+    (el camion fuera del mapa de su variante): el mod de mapa sale arriba
+    solo, porque esta en todos los reportes de esa zona. Sin autor ni
+    version; sin repetidos; hasta ACTIVE_MOD_NAMES_MAX. None si el log no
+    tiene la lista (por ejemplo en TruckersMP)."""
+    if mods is None:
+        return None
+    out = []
+    for m in mods:
+        nombre = " ".join(str(m.get("name") or m.get("file") or "").split())[:ACTIVE_MOD_NAME_LEN]
+        if nombre and nombre not in out:
+            out.append(nombre)
+        if len(out) >= ACTIVE_MOD_NAMES_MAX:
+            break
+    return out
+
+
+def read_active_mod_names() -> dict:
+    """{'ets2': [nombres] | None, 'ats': [...] | None}, del mismo
+    game.log.txt que read_map_mods."""
+    result = {}
+    for game, path in game_log_paths().items():
+        try:
+            with open(path, encoding="utf-8", errors="ignore") as f:
+                text = f.read()
+        except OSError:
+            result[game] = None
+            continue
+        result[game] = active_mod_names(parse_active_mods(text))
+    return result
+
+
+def read_mounted_mods() -> dict:
+    """{'ets2': [rutas] | None, 'ats': [...] | None}: los archivos de los mods
+    del perfil cargado, del mismo game.log.txt (ver map_builder)."""
+    import map_builder
+    result = {}
+    for game, path in game_log_paths().items():
+        try:
+            with open(path, encoding="utf-8", errors="ignore") as f:
+                result[game] = map_builder.mounted_mod_paths(f.read())
+        except OSError:
+            result[game] = None
+    return result
 
 
 def read_map_mods() -> dict:
@@ -208,10 +353,16 @@ def read_map_mods() -> dict:
     for game, path in game_log_paths().items():
         try:
             with open(path, encoding="utf-8", errors="ignore") as f:
-                mods = parse_active_mods(f.read())
+                text = f.read()
         except OSError:
-            mods = None
-        result[game] = detect_map_mods(mods) if mods is not None else None
+            result[game] = None
+            continue
+        mods = parse_active_mods(text)
+        flags = detect_map_mods(mods) if mods is not None else None
+        if is_truckersmp_session(text):
+            flags = flags or detect_map_mods([])
+            flags["truckersmp"] = True
+        result[game] = flags
     return result
 
 
@@ -227,7 +378,7 @@ def find_controls_sii_files() -> list:
 
 
 def parse_controls_sii(text: str) -> dict:
-    """{accion_scs: tecla_pydirectinput o None} de cada linea 'mix' del
+    """{accion_scs: nombre_de_tecla o None} de cada linea 'mix' del
     controls.sii - solo mira el primer binding de teclado de cada una,
     ignora binds de joystick/mouse."""
     result = {}
@@ -236,7 +387,7 @@ def parse_controls_sii(text: str) -> dict:
         key_match = _KEYBOARD_BIND_RE.search(expr)
         if key_match:
             scs_key = key_match.group(1)
-            result[action] = _SCS_KEY_TO_PYDIRECTINPUT.get(scs_key, scs_key)
+            result[action] = _SCS_KEY_TO_NOMBRE.get(scs_key, scs_key)
         else:
             result[action] = None
     return result
@@ -270,7 +421,10 @@ def detect_keybinds_from_controls_sii() -> dict:
 def keybinds_path() -> str:
     # Al lado del .exe (o del script, corriendo desde fuente) - no en el
     # directorio de trabajo actual, que puede variar segun como se lance.
-    base_dir = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
+    exe = sys.executable
+    if getattr(sys, "frozen", False) and os.path.islink(exe):
+        exe = os.path.realpath(exe)  # winget: ver win_integration._executable
+    base_dir = os.path.dirname(exe if getattr(sys, "frozen", False) else os.path.abspath(__file__))
     return os.path.join(base_dir, "keybinds.json")
 
 
@@ -305,11 +459,7 @@ def save_keybinds(keybinds: dict) -> None:
 
 
 def find_game_window():
-    for title in GAME_WINDOW_TITLES:
-        hwnd = _user32.FindWindowW(None, title)
-        if hwnd:
-            return hwnd
-    return None
+    return window_compat.find_game_window(GAME_WINDOW_TITLES)
 
 
 _PROCESS_QUERY_INFORMATION = 0x0400
@@ -324,6 +474,8 @@ def running_game_info(hwnd) -> dict | None:
     La heuristica de elevacion: si desde aca (no elevados) no podemos abrir
     el proceso con QUERY_INFORMATION pero si con QUERY_LIMITED, el juego
     corre con mayor integridad que nosotros."""
+    if not IS_WINDOWS:
+        return window_compat.process_info(hwnd)
     pid = ctypes.c_ulong(0)
     _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
     if not pid.value:
@@ -362,6 +514,12 @@ def bring_window_to_foreground(hwnd) -> None:
     # combina con AttachThreadInput para maxima confiabilidad. Best-effort:
     # en casos raros Windows igual lo bloquea, no hay forma 100% garantizada
     # sin tocar politicas del sistema.
+    #
+    # En Linux no existe nada de esto: se le pide al gestor de ventanas y
+    # listo (window_compat).
+    if not IS_WINDOWS:
+        window_compat.bring_to_foreground(hwnd)
+        return
     foreground_hwnd = _user32.GetForegroundWindow()
     current_thread_id = _kernel32.GetCurrentThreadId()
     foreground_thread_id = _user32.GetWindowThreadProcessId(foreground_hwnd, None)
@@ -379,6 +537,59 @@ def bring_window_to_foreground(hwnd) -> None:
         _user32.AttachThreadInput(current_thread_id, target_thread_id, False)
 
 
+# Botones custom de la web: la tecla viaja con el comando ("ctrl+shift+f5"),
+# se valida contra esta lista blanca (nada de Win, nada de Alt+F4) y se
+# aprieta con los modificadores sostenidos.
+CUSTOM_KEY_MODIFIERS = ("ctrl", "shift", "alt")
+CUSTOM_KEY_ALLOWED = (
+    set("abcdefghijklmnopqrstuvwxyz0123456789")
+    | {f"f{i}" for i in range(1, 25)}
+    | {f"num{i}" for i in range(10)}
+    | {"space", "enter", "tab", "esc", "backspace", "delete", "insert", "home", "end", "pageup", "pagedown",
+       "up", "down", "left", "right", "add", "subtract", "multiply", "divide", "decimal",
+       ";", "'", ",", ".", "/", "\\", "[", "]", "-", "=", "`"}
+)
+
+
+def parse_custom_key(spec) -> list | None:
+    """'ctrl+shift+f5' -> ['ctrl', 'shift', 'f5'] (modificadores primero,
+    sin repetir), o None si algo no esta en la lista blanca."""
+    if not isinstance(spec, str):
+        return None
+    parts = [p.strip().lower() for p in spec.split("+")]
+    if not parts or any(not p for p in parts) or len(parts) > 4:
+        return None
+    mods, key = parts[:-1], parts[-1]
+    if len(set(mods)) != len(mods) or any(m not in CUSTOM_KEY_MODIFIERS for m in mods):
+        return None
+    if key not in CUSTOM_KEY_ALLOWED or ("alt" in mods and key == "f4"):
+        return None
+    return mods + [key]
+
+
+def send_custom_key(spec) -> str:
+    combo = parse_custom_key(spec)
+    if not combo:
+        return "bad_key"
+    hwnd = find_game_window()
+    if not hwnd:
+        return "no_window"
+    try:
+        bring_window_to_foreground(hwnd)
+        mods, key = combo[:-1], combo[-1]
+        for m in mods:
+            keys_compat.key_down(m)
+        try:
+            keys_compat.press(key)
+        finally:
+            for m in reversed(mods):
+                keys_compat.key_up(m)
+        return "ok"
+    except Exception as exc:
+        logging.warning(f"No se pudo enviar la tecla custom '{spec}': {exc}")
+        return str(exc)
+
+
 def send_game_command(action: str, keybinds: dict) -> str:
     """Devuelve un codigo de resultado ("ok", "no_key", "no_window", o el
     texto de la excepcion) - la web lo usa para avisar cuando algo no
@@ -393,7 +604,7 @@ def send_game_command(action: str, keybinds: dict) -> str:
         return "no_window"
     try:
         bring_window_to_foreground(hwnd)
-        pydirectinput.press(key)
+        keys_compat.press(key)
         return "ok"
     except Exception as exc:
         logging.warning(f"No se pudo enviar el comando '{action}' (tecla '{key}'): {exc}")
@@ -416,9 +627,87 @@ def is_newer_version(a: str, b: str) -> bool:
 def request_pairing_code(backend_ws_url: str) -> str:
     url = http_base_url(backend_ws_url) + "/pair/new"
     req = Request(url, method="POST")
-    with urlopen(req, timeout=10) as resp:
+    with red.abrir(req, timeout=10) as resp:
         data = json.loads(resp.read())
     return data["code"]
+
+
+def heading_deg(raw: dict):
+    """Rumbo del camion en grados de brujula (0 = norte, sentido horario).
+
+    El SDK lo da en rotationX, en rango <0,1) y ANTIHORARIO: 0 es norte,
+    0.25 oeste, 0.5 sur y 0.75 este (ver scssdk_value.h, y el plugin lo
+    guarda crudo en el offset 3 del bloque). Se convierte aca, que es el
+    unico lugar que toca el SDK, y la web recibe algo que puede usar tal
+    cual como bearing del mapa.
+
+    Antes la web deducia el rumbo del desplazamiento entre dos posiciones.
+    Eso anda bien en recta pero mide la CUERDA de la curva, no la tangente,
+    y encima necesita que el camion se haya movido unos metros: en una
+    rotonda o girando en una esquina la flecha quedaba atrasada.
+    """
+    valor = raw.get("rotationX")
+    if valor is None:
+        return None
+    try:
+        return round((360.0 - (float(valor) % 1.0) * 360.0) % 360.0, 1)
+    except (TypeError, ValueError):
+        return None
+
+
+def trailers_enganchados(raw: dict) -> list:
+    """Los remolques realmente enganchados, en orden. El SDK reserva diez
+    ranuras (dobles y triples australianos); las vacias vienen llenas de
+    ceros, que no es lo mismo que "sin dano"."""
+    return [t for t in (raw.get("trailer") or []) if isinstance(t, dict) and t.get("attached")]
+
+
+def trailer_wear(raw: dict):
+    """Desgaste del remolque, del primero enganchado. None sin remolque:
+    la web esconde la fila en vez de mostrar tres ceros que parecen un
+    remolque impecable."""
+    enganchados = trailers_enganchados(raw)
+    if not enganchados:
+        return None
+    primero = enganchados[0]
+    return {
+        "chassis": primero.get("wearChassis"),
+        "wheels": primero.get("wearWheels"),
+        "body": primero.get("wearBody"),
+    }
+
+
+def cargo_damage(raw: dict):
+    """El peor dano entre los remolques enganchados: con un doble, el pago
+    lo castiga el que llego peor, no el primero."""
+    valores = [t.get("cargoDamage") for t in trailers_enganchados(raw)
+               if t.get("cargoDamage") is not None]
+    return max(valores) if valores else None
+
+
+# OJO con los nombres de las alertas: en el bloque del plugin
+# airPressureWarning, oilPressureWarning, waterTemperatureWarning y
+# batteryVoltageWarning aparecen DOS veces, primero como float (el umbral
+# configurado del camion) y despues como bool (si esta sonando ahora). El
+# parser arma un dict, asi que gana el ultimo y raw.get() devuelve el bool,
+# que es el que queremos. Si algun dia el orden cambia, esto pasa a ser un
+# numero y "hay alerta" queda en true para siempre.
+def reloj_del_juego(raw: dict):
+    """Minutos de juego del reloj que ve el jugador. En un convoy (ATS 1.45 y
+    ETS2 1.45 en adelante) es el del servidor: el de la economia local
+    (time_abs) mas multiplayerTimeOffset, que el SDK manda en 0 fuera del
+    convoy. El de la economia local ademas se frena en el convoy mientras el
+    del servidor sigue (pedido de Discord, 09-10: la hora del tablero no era
+    la del convoy). El plugin escribe un s32 en un campo de 64 bits: valen los
+    32 de abajo, con signo."""
+    reloj = raw.get("time_abs")
+    if reloj is None:
+        return None
+    offset = raw.get("multiplayerTimeOffset") or 0
+    offset &= 0xFFFFFFFF
+    if offset >= 0x80000000:
+        offset -= 0x100000000
+    return reloj + offset
 
 
 def build_payload(raw: dict) -> dict:
@@ -436,6 +725,8 @@ def build_payload(raw: dict) -> dict:
             "y": raw.get("coordinateY"),
             "z": raw.get("coordinateZ"),
         },
+        # Rumbo real del juego, que la web usa en vez de deducirlo.
+        "heading": heading_deg(raw),
         "speedKmh": round(speed_kmh, 1),
         "speedLimitKmh": round(speed_limit_kmh, 1),
         "cargo": raw.get("cargo") or None,
@@ -447,6 +738,15 @@ def build_payload(raw: dict) -> dict:
         # tokens internos (ej. "wal_mkt", "kansas_city"): la web los cruza
         # con los POIs del mapa para rutear a la empresa exacta de
         # carga/descarga en vez de al centro de la ciudad.
+        # De que mercado salio el trabajo ("quick_job", "cargo_market",
+        # "external_contracts"...) y si es transporte especial. Importa
+        # porque de eso depende que el SDK informe o no la empresa de
+        # destino: sin empresa, la web cae al centro de la ciudad, que en
+        # Longyearbyen son 908 m. Teniendo el mercado se puede explicar la
+        # diferencia en vez de que parezca un destino equivocado.
+        "jobMarket": raw.get("jobMarket") or None,
+        "specialJob": bool(raw.get("specialJob")),
+        "plannedDistanceKm": raw.get("plannedDistanceKm") or None,
         "companySrc": raw.get("compSrc") or None,
         "companySrcId": raw.get("compSrcId") or None,
         "citySrcId": raw.get("citySrcId") or None,
@@ -466,8 +766,9 @@ def build_payload(raw: dict) -> dict:
         "restStopSeconds": raw.get("restStop"),
         "restStopMinutes": raw.get("restStop"),
         # Reloj del juego en minutos: la web lo usa para medir la escala de
-        # tiempo real (ETA real, descanso en tiempo real).
-        "gameTimeMinutes": raw.get("time_abs"),
+        # tiempo real (ETA real, descanso en tiempo real). En un convoy, el
+        # del servidor (ver reloj_del_juego).
+        "gameTimeMinutes": reloj_del_juego(raw),
         # time_abs/time_abs_delivery vienen en minutos de tiempo de juego (no
         # tiempo real) - la diferencia es cuanto falta para el deadline de
         # entrega del trabajo actual. Sin trabajo activo, time_abs_delivery
@@ -478,6 +779,10 @@ def build_payload(raw: dict) -> dict:
             if raw.get("time_abs_delivery") else None
         ),
         "truckBrand": raw.get("truckBrand") or None,
+        # Id interno de la marca ("ford", "kenworth"): en ATS los autos del
+        # Road Trip son de marcas que no hacen camiones, y la web usa eso para
+        # mostrar los estacionamientos para auto en vez de los de camion.
+        "truckBrandId": raw.get("truckBrandId") or None,
         "truckName": raw.get("truckName") or None,
         "odometerKm": raw.get("truckOdometer"),
         "fuel": raw.get("fuel"),
@@ -503,6 +808,9 @@ def build_payload(raw: dict) -> dict:
             "beacon": raw.get("lightsBeacon"),
             "blinkerLeft": raw.get("blinkerLeftOn"),
             "blinkerRight": raw.get("blinkerRightOn"),
+            "parking": raw.get("lightsParking"),
+            "brake": raw.get("lightsBrake"),
+            "reverse": raw.get("lightsReverse"),
         },
         "wipers": raw.get("wipers"),
         # Estados usados para resaltar los botones de comandos como activos
@@ -511,19 +819,35 @@ def build_payload(raw: dict) -> dict:
         "parkingBrake": raw.get("parkBrake"),
         "differentialLock": raw.get("differentialLock"),
         "liftAxle": raw.get("liftAxleIndicator"),
+        "motorBrake": raw.get("motorBrake"),
+        # El retarder va de 0 al total de pasos que tenga el camion: solo
+        # "2" no dice nada, hace falta saber si es 2 de 3 o 2 de 5.
+        "retarder": raw.get("retarderBrake"),
+        "retarderSteps": raw.get("retarderStepCount"),
         "trailerAttached": bool((raw.get("trailer") or [{}])[0].get("attached")),
+        "trailerWear": trailer_wear(raw),
+        # Dano de la carga EN VIVO. Hasta ahora solo se sabia al entregar,
+        # que es tarde: es lo unico que se puede corregir manejando.
+        "cargoDamage": cargo_damage(raw),
         # el SDK no tiene alerta dedicada de temperatura de aceite, solo de
-        # presion de aire/agua/bateria - la de aceite se infiere en la web
-        # con un umbral simple sobre oilTemperature.
+        # presion de aire/aceite/agua/bateria - la de aceite se infiere en
+        # la web con un umbral simple sobre oilTemperature.
         "mechanicalWarnings": {
             "airPressure": raw.get("airPressureWarning"),
             "waterTemperature": raw.get("waterTemperatureWarning"),
             "batteryVoltage": raw.get("batteryVoltageWarning"),
+            "oilPressure": raw.get("oilPressureWarning"),
+            "fuel": raw.get("fuelWarning"),
+            "adblue": raw.get("adblueWarning"),
         },
         "airPressure": raw.get("airPressure"),
+        "oilPressure": raw.get("oilPressure"),
         "waterTemperature": raw.get("waterTemperature"),
         "oilTemperature": raw.get("oilTemperature"),
+        "brakeTemperature": raw.get("brakeTemperature"),
         "batteryVoltage": raw.get("batteryVoltage"),
+        "adblue": raw.get("adblue"),
+        "adblueCapacity": raw.get("adblueCapacity"),
         "event": {
             "tollgate": raw.get("tollgate"),
             "tollgatePayAmount": raw.get("tollgatePayAmount"),
@@ -551,7 +875,8 @@ def build_payload(raw: dict) -> dict:
 # despues como sugiere la doc del plugin. Por eso se cachea el ultimo snapshot
 # valido mientras el trabajo esta activo (onJob=True) y se lo pega al evento
 # recien en el momento de la entrega/cancelacion.
-_last_job_snapshot = {"citySrc": None, "cityDst": None, "truckBrand": None, "truckName": None, "cargo": None}
+_last_job_snapshot = {"citySrc": None, "cityDst": None, "truckBrand": None, "truckName": None,
+                      "cargo": None, "jobMarket": None, "specialJob": False}
 
 
 def update_job_snapshot(raw: dict):
@@ -563,28 +888,46 @@ def update_job_snapshot(raw: dict):
             "truckBrand": raw.get("truckBrand") or None,
             "truckName": raw.get("truckName") or None,
             "cargo": raw.get("cargo") or None,
+            "jobMarket": raw.get("jobMarket") or None,
+            "specialJob": bool(raw.get("specialJob")),
         }
 
 
-# jobDelivered/jobCancelled NO son un pulso de un frame en la memoria
-# compartida: el plugin los deja en true hasta que el juego los limpia (minutos,
-# hasta el proximo trabajo). Si se mandaran tal cual, cada reconexion del
-# cliente o reinicio del backend volveria a "entregar" el mismo trabajo. Se
-# manda true solo en la transicion false -> true vista por este proceso; el
-# primer tick despues de arrancar solo fija el estado (None = desconocido).
-_last_event_state = {"jobDelivered": None, "jobCancelled": None}
+# Las marcas de evento del plugin (entrega, cancelacion, multa, peaje,
+# ferry, tren) NO son un pulso: el plugin las INVIERTE en cada evento
+# (`special_b.jobDelivered ^= true`), asi que la primera entrega la pone en
+# true y la segunda en false. Contar solo el paso a true perdia un evento de
+# cada dos: en la prueba de ATS, la segunda entrega de la partida no cerro el
+# viaje, y la web perdia la mitad de los peajes y multas.
+# Se manda true durante un tick por cada CAMBIO visto por este proceso, y
+# nada mas: asi la web y el acumulador, que esperan un pulso, reciben uno. El
+# primer tick despues de abrir la telemetria solo fija el estado (None =
+# desconocido): la marca puede venir invertida de antes, y al reiniciarse el
+# juego la memoria vuelve a false sin que haya pasado nada.
+PULSE_FLAGS = ("jobDelivered", "jobCancelled", "tollgate", "fined", "ferry", "train")
+_last_event_state = {k: None for k in PULSE_FLAGS}
+
+
+def reset_event_state() -> None:
+    """Al abrir (o reabrir) la telemetria: el estado de las marcas vuelve a
+    desconocido. Sin esto, el juego reiniciado (todo en false) se leeria
+    como un cambio, y por lo tanto como una entrega."""
+    for k in PULSE_FLAGS:
+        _last_event_state[k] = None
 
 
 def edge_filter_job_events(payload: dict) -> None:
     event = payload.get("event") or {}
-    for key in ("jobDelivered", "jobCancelled"):
+    for key in PULSE_FLAGS:
+        if key not in event:
+            continue
         current = bool(event.get(key))
         previous = _last_event_state[key]
         _last_event_state[key] = current
-        event[key] = current and previous is False
+        event[key] = previous is not None and current != previous
 
 
-def attach_job_snapshot_if_finished(payload: dict):
+def attach_job_snapshot_if_finished(payload: dict, raw: dict | None = None):
     edge_filter_job_events(payload)
     event = payload.get("event") or {}
     if event.get("jobDelivered") or event.get("jobCancelled"):
@@ -593,6 +936,17 @@ def attach_job_snapshot_if_finished(payload: dict):
         event["jobTruckBrand"] = _last_job_snapshot["truckBrand"]
         event["jobTruckName"] = _last_job_snapshot["truckName"]
         event["jobCargo"] = _last_job_snapshot["cargo"]
+        # .get y no [] a proposito: el snapshot puede venir de una version
+        # anterior o estar incompleto, y esto corre en el evento de entrega,
+        # que es justo el que no puede romperse.
+        event["jobMarket"] = _last_job_snapshot.get("jobMarket")
+        event["jobSpecial"] = _last_job_snapshot.get("specialJob", False)
+        # Estos tres solo valen en el momento del pulso: el juego los llena
+        # justo al entregar, antes vienen en cero.
+        if raw:
+            event["jobCargoDamage"] = raw.get("jobDeliveredCargoDamage")
+            event["jobEarnedXp"] = raw.get("jobDeliveredEarnedXp")
+            event["jobDeliveryTime"] = raw.get("jobDeliveredDeliveryTime")
 
 
 EVENT_FLAGS = ("jobDelivered", "jobCancelled", "tollgate", "fined", "ferry", "train")
@@ -601,6 +955,20 @@ EVENT_FLAGS = ("jobDelivered", "jobCancelled", "tollgate", "fined", "ferry", "tr
 def payload_has_event(payload: dict) -> bool:
     event = payload.get("event") or {}
     return any(event.get(k) for k in EVENT_FLAGS)
+
+
+# Lo define la bandeja: la web avisa que el camion esta fuera del mapa que
+# conoce ({"type": "offmap", "game": "ats"}), y la bandeja ofrece armar el
+# mapa en la PC (map_builder.py).
+on_offmap = None
+# Lo define la bandeja: el giro, lo que falta y la llegada que calcula la web,
+# como texto ya traducido, para el overlay en el juego (overlay.py). La web lo
+# manda solo si client_status dice que el overlay esta prendido.
+on_nav_hud = None
+
+# Lo define la bandeja: cuantos tableros hay conectados por el relay
+# ({"type": "viewers", "count": n}), para no abrir otra pestana si ya hay uno.
+on_viewers = None
 
 
 async def handle_control_message(message: str, keybinds: dict, send) -> None:
@@ -612,7 +980,10 @@ async def handle_control_message(message: str, keybinds: dict, send) -> None:
         msg_type = payload.get("type")
         if msg_type == "command":
             action = payload.get("action", "")
-            result = await asyncio.to_thread(send_game_command, action, keybinds)
+            if action == "custom":
+                result = await asyncio.to_thread(send_custom_key, payload.get("key"))
+            else:
+                result = await asyncio.to_thread(send_game_command, action, keybinds)
             if result != "ok":
                 await send(json.dumps({"type": "command_result", "action": action, "ok": False, "reason": result}))
         elif msg_type == "get_keybinds":
@@ -620,6 +991,15 @@ async def handle_control_message(message: str, keybinds: dict, send) -> None:
             live = dict(keybinds)
             live.update({a: k for a, k in detected.items() if k})
             await send(json.dumps({"type": "keybinds", "data": live}))
+        elif msg_type == "offmap":
+            if on_offmap and payload.get("game") in ("ats", "ets2"):
+                on_offmap(payload["game"])
+        elif msg_type == "viewers":
+            if on_viewers and isinstance(payload.get("count"), int):
+                on_viewers(payload["count"])
+        elif msg_type == "nav_hud":
+            if on_nav_hud:
+                on_nav_hud(payload)
         elif msg_type == "set_keybinds":
             incoming = payload.get("data") or {}
             keybinds.update({k: (v or None) for k, v in incoming.items() if k in DEFAULT_KEYBINDS})
@@ -648,19 +1028,23 @@ async def receive_commands(ws, keybinds: dict):
 
 
 async def run(backend_ws_url: str, code: str):
-    truck_telemetry.init()
+    telemetry_compat.init()
+    reset_event_state()
     print("Conectado al SDK de telemetria del juego.")
     keybinds = load_keybinds()
 
     url = f"{backend_ws_url}/ws/client/{code}"
+    ruta = red.Ruta(url)
     while True:
+        conecto = False
         try:
-            async with websockets.connect(url) as ws:
+            async with websockets.connect(url, **ruta.opciones()) as ws:
+                conecto = True
                 print(f"Conectado al backend. Codigo de pairing: {code}")
                 recv_task = asyncio.create_task(receive_commands(ws, keybinds))
                 try:
                     while True:
-                        raw = truck_telemetry.get_data()
+                        raw = telemetry_compat.get_data()
                         # sdkActive en False significa que el SDK todavia no
                         # sincronizo el primer frame real del juego (justo
                         # despues de init() puede devolver datos viejos/en cero,
@@ -669,15 +1053,19 @@ async def run(backend_ws_url: str, code: str):
                         if raw.get("sdkActive"):
                             update_job_snapshot(raw)
                             payload = build_payload(raw)
-                            attach_job_snapshot_if_finished(payload)
+                            attach_job_snapshot_if_finished(payload, raw)
                             await ws.send(json.dumps(payload))
                         await asyncio.sleep(CLOUD_SEND_INTERVAL_SECONDS)
                 finally:
                     recv_task.cancel()
         except (websockets.ConnectionClosed, OSError) as exc:
+            if not conecto:
+                ruta.fallo_al_conectar()
             print(f"Conexion perdida ({exc}). Reintentando en {RECONNECT_DELAY_SECONDS}s...")
             await asyncio.sleep(RECONNECT_DELAY_SECONDS)
         except Exception as exc:
+            if not conecto:
+                ruta.fallo_al_conectar()
             print(f"Error leyendo telemetria (juego cerrado?): {exc}")
             await asyncio.sleep(RECONNECT_DELAY_SECONDS)
 

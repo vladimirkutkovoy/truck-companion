@@ -7,8 +7,9 @@ Euro Truck Simulator 2 and American Truck Simulator.
 
 - It reads live telemetry from the game (position, speed, fuel, cargo, etc.)
   through **SCS Software's official Telemetry SDK**, via a shared-memory
-  segment (`Local\SCSTelemetry`) that the game itself creates when the SDK
-  plugin is installed.
+  segment that the telemetry plugin publishes inside the game
+  (`Local\TruckDashTelemetry` for the plugin Truck Dash installs,
+  `Local\SCSTelemetry` for the standard one other apps use).
 - It sends that data over a WebSocket connection to a relay backend
   (hosted on Railway), which forwards it to your browser at
   [trucksim-dash.com](https://trucksim-dash.com).
@@ -43,14 +44,22 @@ the client itself.
 
 Download the latest release from the
 [Releases page](https://github.com/Nethercap/truck-companion/releases),
-unzip it, and run `TruckDash.exe`. No installation, no admin rights, no
-Python required — everything needed is bundled inside.
+**extract the zip to a normal folder** (Documents, for example) and run
+`TruckDash.exe` from there. No installation, no admin rights, no Python
+required, everything needed is bundled inside. Do not run it straight from
+inside the zip: Windows extracts it to a temporary folder that gets wiped, so
+"start with Windows" would point at a path that no longer exists, and an
+antivirus will flag a program that adds itself to startup from a temporary
+folder. The client refuses to register the startup entry in that case and
+tells you to move it first.
 
 On first run a **Setup & status** window opens (you can reopen it any time
 from the tray icon). It finds your ETS2 / ATS install through Steam and
 installs the SCS Telemetry SDK plugin into the game for you with one click
-(`<game>\bin\win_x64\plugins\scs-telemetry.dll`). Restart the game if it
-was open. Non-Steam install? Use "Add game folder..." and pick the game's
+(`<game>\bin\win_x64\plugins\truckdash-telemetry.dll`). Restart the game if
+it was open. It never touches an existing `scs-telemetry.dll`: other apps
+(Trucky, for one) ship that file and check that it is unchanged, so Truck
+Dash installs its own plugin next to it and both work. Non-Steam install? Use "Add game folder..." and pick the game's
 folder.
 
 The same window shows the live status (waiting for the game / in the truck /
@@ -58,15 +67,85 @@ live), your pairing code for the phone, an option to **start Truck Dash with
 Windows** (the dashboard then opens automatically when the game starts), and
 one-click updates when a new version is out.
 
+### The link on your phone keeps working
+
+The pairing code is saved and reused, so the dashboard link the client opens
+(`trucksim-dash.com/app/?code=...`) can be bookmarked on your phone or tablet
+once and it will keep working: open the bookmark, start Truck Dash on the PC,
+and it connects on its own. If the page loads before the PC client is up it
+just says "client not connected" and keeps waiting.
+
+If the code leaks (a stream, a screenshot), use **New code** in the Setup
+window: Truck Dash restarts with a fresh code and the old links stop working.
+
+### Show your trip on Discord
+
+Optional, off by default: Settings in the Setup window has a checkbox that
+publishes the current run to your Discord profile through Rich Presence
+(origin, destination, cargo and distance left, plus how long you have been
+driving). It talks to the Discord app running on the same PC over its local
+pipe: no account, no login, nothing leaves your machine other than what your
+Discord friends see on your profile. Turn it off and it stops immediately.
+
 ### Same Wi-Fi? LAN mode
 
 If your phone or tablet is on the same Wi-Fi as the PC, the Setup window
 also shows a **LAN address** (with a QR code to scan). That opens the
 dashboard served directly by the client (`http://<your-pc-ip>:27765/app/`)
 with a direct WebSocket link — lowest latency, no pairing code, and it keeps
-working even if your internet drops. Windows may ask once to allow
-TruckDash through the firewall (private networks) — click Allow. The cloud
-mode with the pairing code keeps working at the same time.
+working even if your internet drops. The cloud mode with the pairing code
+keeps working at the same time.
+
+**LAN mode uses two ports, and you need both open:**
+
+| port | what it does | what happens if it is closed |
+|---|---|---|
+| 27765 (HTTP) | serves the dashboard page | the page does not load at all |
+| 27766 (WebSocket) | sends the live telemetry | the page loads but stays empty |
+
+That second row is the confusing one: with only 27765 open, the dashboard
+appears and then sits there with no data, which looks like the client is
+broken rather than like a closed port.
+
+On Windows this is usually automatic: it asks once to allow TruckDash
+through the firewall on private networks, and Allow covers both. On Linux
+you have to open them yourself, for example:
+
+```bash
+sudo ufw allow 27765/tcp
+sudo ufw allow 27766/tcp
+```
+
+Both can be changed with the `TRUCKDASH_HTTP_PORT` and `TRUCKDASH_WS_PORT`
+environment variables if those numbers clash with something else.
+
+**Same Wi-Fi and the phone still can't open it?** In order of how often:
+
+1. Windows has the network as **Public**. The firewall permission is for
+   private networks, so the phone is blocked. Setup warns about this; set the
+   network profile to Private in Windows Settings, Network & internet.
+2. The phone is on a **guest network**, or the router isolates Wi-Fi
+   devices (AP/client isolation, common on ISP and mesh routers).
+3. A **VPN** is on, on the PC (the address in Setup is then the VPN's) or on
+   the phone (ad-blocking apps that work as a VPN count too).
+
+The log (`truckdash.log`) says which devices reached the PC: `LAN: pagina
+(27765) desde <ip>` and `LAN: datos (27766) desde <ip>`. No line from the
+phone's IP means nothing got through; only the first one means 27766 is
+blocked. The pairing code works in all of these cases.
+
+### Map mods we don't have: Build my map
+
+If your truck drives off the map Truck Dash knows, the dashboard tells the
+client, and Setup offers **Build my map**: it builds the map from your game
+and your active mods, on your PC. Close the game first (it needs up to 7 GB
+of memory) and give it about five minutes. The first time it downloads the
+map builder (about 40 MB) from this same release and checks its SHA-256.
+
+The map is saved in `%LOCALAPPDATA%\TruckDash\maps\` and used while the same
+mods are active. It shows on that PC and on your Wi-Fi in LAN mode; a phone
+connected with the pairing code from somewhere else keeps the map from our
+servers. The builder is GPL-3.0, see [`builder/`](../builder/).
 
 ### Windows SmartScreen ("unrecognized app")
 
@@ -76,6 +155,42 @@ anyway**. Every release is built by GitHub Actions from the tagged source and
 lists the SHA-256 of the files so you can verify what you downloaded — or
 just run it from source (below).
 
+### Antivirus flags TruckDash.exe (false positive)
+
+Some engines flag the `.exe`, especially after you enable "start with
+Windows". It is a **false positive** caused by how the client is packaged,
+not by what it does: a PyInstaller one-file executable unpacks itself into a
+temp folder at startup and is not code-signed, which is exactly the shape
+heuristic/ML engines look for. Everything the client does is in this repo,
+the build runs on GitHub's runners (not on anyone's PC) and each release
+publishes the SHA-256 of the file.
+
+What we do about it: the executable now carries proper version metadata and
+is no longer UPX-compressed (both are known heuristic triggers), and a code
+signing certificate through [SignPath](https://signpath.org/) for open
+source projects is in progress — a signed build is what actually removes
+these warnings for good.
+
+The one detection we have seen reported is `Behavior:Win32/Persistence.A!ml`
+from Microsoft Defender. That one is not about the file at all: it fires when
+the program is run **from inside the zip** (so it lives in a temporary folder)
+and the user turns on "start with Windows", because a program in a temp folder
+writing itself into the `Run` key is a classic persistence pattern. Extract the
+zip to a real folder and it does not happen; since 1.5.8 the client refuses to
+register startup from a temporary folder anyway.
+
+What you can do meanwhile:
+
+- Add an exclusion for `TruckDash.exe` in your antivirus, **or**
+- run the client from source with Python (below) — same program, no
+  packaged `.exe` involved, **or**
+- report the false positive to your vendor, which also helps everyone else:
+  [Microsoft](https://www.microsoft.com/en-us/wdsi/filesubmission),
+  [Avast/AVG](https://www.avast.com/false-positive-file-form.php),
+  [Bitdefender](https://www.bitdefender.com/consumer/support/answer/29358/),
+  [ESET](https://support.eset.com/en/kb141), most other vendors have a
+  similar form.
+
 ### Manual plugin install
 
 If you'd rather copy the plugin yourself: grab it from
@@ -83,8 +198,10 @@ If you'd rather copy the plugin yourself: grab it from
 and copy **only the `Win64\scs-telemetry.dll` file** into your game's install
 folder, inside `bin\win_x64\plugins\` (create that `plugins` folder if it
 doesn't exist). The most common mistake is dropping the `.dll` directly into
-`bin\win_x64\` instead of the `plugins\` subfolder. The client bundles the
-same file (`vendor/scs-telemetry.dll`, MIT licensed).
+`bin\win_x64\` instead of the `plugins\` subfolder. That plugin works for
+everything except jobs taken with a car in ATS; the client bundles a fork of
+it that also reads those (`vendor/truckdash-telemetry.dll`, MIT licensed,
+source in `plugin/`).
 
 If the dashboard still shows no data, right-click the tray icon and pick
 **"Show log file (troubleshooting)"** — it'll tell you whether the plugin
@@ -107,6 +224,128 @@ likelihood:
 2. **Your system clock is wrong.** Even with "set time automatically"
    turned on, it can drift if it hasn't synced in a while. Double-check the
    date and time are actually correct (not just set to "automatic").
+
+### Proxy, VPN or ping booster
+
+The game hands its telemetry to Truck Dash through memory on your own PC, so
+a proxy on the game itself doesn't matter. The only part that goes over the
+internet is Truck Dash talking to the relay, and Truck Dash follows the
+Windows proxy settings (or `HTTPS_PROXY`), so a proxy set up for the whole
+system catches it too.
+
+Since 1.5.19 the client tries the connection the way the system says first
+and, if that fails and there is a system proxy, tries again without it. The
+log shows which way it went: a line `System proxy for the relay: ...` at
+startup, and `next attempt goes direct, without the system proxy` when it
+had to skip it. If neither way connects, the log says why on the lines
+right after.
+
+### Linux (through Proton)
+
+The client runs under Proton and a tester has it working, including plugin
+install, the pairing code and LAN mode. There is no native Linux build yet.
+The in-game overlay is Windows only: Wine can't draw a see-through window
+over the game that lets clicks through, so under Proton its section in Setup
+only explains that. Use the dashboard on a phone or tablet instead.
+
+The one rule that matters: **the client has to run in the same Proton prefix
+as the game.** The telemetry it reads is a named shared memory block, and
+under Wine those names live in the per prefix wineserver. A client in a
+different prefix sees nothing at all: no error, no data, just silence.
+
+**Start the game first, then the client.** Steam only runs one thing per
+prefix at a time, so launching both through Steam at once does not work.
+
+There are two ready-made launchers in [`linux/`](linux/), one per game:
+`truckdash-ets2.desktop` and `truckdash-ats.desktop`. They point at the
+prefix Steam creates for each game (`compatdata/227300` for ETS2,
+`compatdata/270880` for ATS), so they work as is if you play with Steam's
+default prefix. Launch one after the game is up.
+
+Paths in a `.desktop` file are not run through a shell, so `$HOME` and `~`
+are not expanded: the files carry `YOURUSER` instead. Replace it with your
+user name and install them, from the folder where you saved them:
+
+```sh
+sed -i "s/YOURUSER/$USER/g" truckdash-*.desktop
+cp truckdash-*.desktop ~/.local/share/applications/
+```
+
+If you also want them on the desktop, copy them to `~/Desktop`, run
+`chmod +x ~/Desktop/truckdash-*.desktop` and, on GNOME, right click them and
+pick "Allow Launching".
+
+Change the paths if yours differ: a prefix of your own instead of the
+game's, another Proton build, or `TruckDash.exe` somewhere other than
+`~/Documents/truckdash/`.
+
+If you would rather launch everything in one go from Steam, put this in the
+game's launch options instead. Steam runs this line through a shell, so
+`$HOME` works here, and since the export applies to the game too, both end
+up in the same prefix. The sleep gives the game time to bring the prefix up
+first:
+
+```
+export STEAM_COMPAT_DATA_PATH="$HOME/Prefixes/YourPrefix"; export STEAM_COMPAT_CLIENT_INSTALL_PATH="$HOME/.local/share/Steam"; (sleep 20 && "$HOME/.local/share/Steam/compatibilitytools.d/Proton-GE Latest/proton" run "$HOME/Documents/truckdash/TruckDash.exe") & exec %command%
+```
+
+Add your own wrapper at the end if you use one, for example
+`exec gamescope -W 1920 -H 1080 -r 120 -- %command%`.
+
+**If you already have launch options** (mangohud, `PROTON_LOG=1`, DLL
+overrides for a mod), they cannot stay in front of the line. The usual form
+`VAR=x mangohud %command%` works because Steam just appends the game to it;
+with the Truck Dash part in the middle, `mangohud` followed by `(` is a shell
+syntax error and nothing launches, not even the game. Move them instead:
+
+- Variables that both should get (the prefix, `PROTON_LOG`) go in the
+  `export` at the start.
+- Variables and wrappers that are only for the game go after `exec`, through
+  `env`, so they don't reach Truck Dash:
+
+```
+export STEAM_COMPAT_DATA_PATH="$HOME/.local/share/Steam/steamapps/compatdata/270880" STEAM_COMPAT_CLIENT_INSTALL_PATH="$HOME/.local/share/Steam" PROTON_LOG=1; (sleep 20 && "$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton11-7/proton" run "$HOME/Documents/truckdash/TruckDash.exe") & exec env MANGOHUD_CONFIG="fps_limit=60" WINEDLLOVERRIDES="dxgi,dinput8=n,b" mangohud %command%
+```
+
+That one is for ATS (`270880`); for ETS2 use `227300`. With `PROTON_LOG=1`,
+Proton writes `steam-<app id>.log` in your home folder, which is the first
+place to look if the game starts and Truck Dash does not.
+
+**Lutris and protontricks have not worked for this in testing**, even
+pointed at the game's prefix with the same Proton build. They start Wine with
+their own settings, and the client ended up on a different wineserver than
+the game: it ran but never saw the game (its log listed no game window at
+all), or the one started second hung. Launch it with Proton's own
+`proton run`, as above.
+
+Tested with **GE-Proton11-7**. The folder name under
+`compatibilitytools.d/` is whatever your Proton build is called; the examples
+above use the one from the tester's machine.
+
+Notes from that setup:
+
+- The plugin installs normally. Proton runs the Windows build of the game,
+  so the Windows `.dll` is the right file and the usual "Plugin installed"
+  check applies.
+- If the game list shows the same game twice, update to 1.5.14 or newer:
+  older versions compared folder paths as text, and Wine reaches the same
+  folder through more than one path.
+- The dashboard may take a bit longer to load the map on a phone than on the
+  PC. That is the map data download, not the prefix.
+- When you close the game, Steam keeps showing it as "Running" and will not
+  let you launch it again until you also close Truck Dash. That is the same
+  reason the client has to live in the game's prefix: there is one wineserver
+  per prefix, and it does not end until the last Wine process does, so the
+  Proton wrapper Steam launched keeps waiting. From 1.5.15 the client closes
+  itself when the game closes, which is what releases the prefix. It is a
+  checkbox in Setup, on by default only under Proton. It waits until the
+  telemetry shared memory has been gone for a minute, so being in a menu or
+  paused does not count as closing the game.
+
+**Native Linux builds of the game** are a different story: they need a
+Linux build of the telemetry plugin, which exists as a test build but has
+not been confirmed against the game yet, and there is no native client. If
+you play the native build and want to help test, open an issue.
 
 ## Building it yourself
 

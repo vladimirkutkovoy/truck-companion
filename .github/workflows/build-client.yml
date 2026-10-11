@@ -6,20 +6,99 @@ name: Build client
 #
 # Uso: git tag v1.3.0 && git push origin v1.3.0
 # (o "Run workflow" a mano desde Actions para solo verificar que compila)
+#
+# Tambien se puede publicar sin pushear el tag: "Run workflow" con `tag`
+# (y opcionalmente `commit`) crea el tag aca adentro y sigue igual que con
+# un tag pusheado. Existe porque las sesiones en la nube pueden pushear
+# ramas pero no tags. El tag queda en `commit`, que tiene que ser el commit
+# de la release: su mensaje es el anuncio de Discord. Y tiene que tener los
+# mismos workflows que la rama de la corrida: GitHub no deja que el token de
+# Actions cree un tag en un commit con otro .github/workflows ("without
+# `workflows` permission"). En la practica, el commit de la release es la
+# punta de main y `commit` se deja vacio.
 
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Publish a release with this tag (v1.2.3). Empty = only check that it builds.'
+        required: false
+        default: ''
+      commit:
+        description: 'Commit to build and tag. Empty = the tip of the branch. It must have the same workflow files as that branch.'
+        required: false
+        default: ''
 
 permissions:
   contents: write
 
 jobs:
-  build:
-    runs-on: windows-latest
+  map-builder:
+    # El armador de "Build my map" (builder/, GPL): se baja aparte, solo
+    # quien lo usa, de la release de su version. Se arma desde el codigo de
+    # truckermudgeon/maps en un commit fijo + builder/truckdash.patch, con el
+    # node.exe oficial verificado contra el SHASUMS de nodejs.org.
+    runs-on: ubuntu-latest
+    env:
+      # La misma version con la que se probo el armador en Windows (09-10).
+      NODE_WIN_VERSION: '24.19.0'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+      - uses: actions/setup-node@v4
+        with:
+          # truckermudgeon/maps pide node >= 24.13 y npm >= 11.6.2 (engines).
+          node-version: '24'
+      - name: Build the map builder
+        run: bash builder/build.sh "$RUNNER_TEMP/builder"
+      - name: Add node.exe for Windows
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          base="https://nodejs.org/dist/v$NODE_WIN_VERSION"
+          zip="node-v$NODE_WIN_VERSION-win-x64.zip"
+          curl -fsSLO "$base/$zip"
+          curl -fsSL "$base/SHASUMS256.txt" | grep " $zip\$" | sha256sum -c -
+          unzip -q "$zip"
+          dest="$RUNNER_TEMP/builder/truckdash-map-builder"
+          cp "node-v$NODE_WIN_VERSION-win-x64/node.exe" "$dest/node.exe"
+          cp "node-v$NODE_WIN_VERSION-win-x64/LICENSE" "$dest/NODE-LICENSE.txt"
+          version=$(sed -n 's/^CLIENT_VERSION = "\(.*\)"/\1/p' "$GITHUB_WORKSPACE/client/client.py")
+          (cd "$RUNNER_TEMP/builder" && zip -qr "$GITHUB_WORKSPACE/TruckDash-MapBuilder-$version.zip" truckdash-map-builder)
+          ls -la "$GITHUB_WORKSPACE"/TruckDash-MapBuilder-*.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TruckDash-MapBuilder
+          path: TruckDash-MapBuilder-*.zip
+
+  build:
+    needs: map-builder
+    runs-on: windows-latest
+    env:
+      # Vacio cuando no hay release: una corrida manual sin tag solo compila.
+      RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+      - name: Create the release tag (manual run)
+        # Solo local por ahora: se pushea recien antes de publicar, para no
+        # dejar un tag sin release si algo falla en el medio.
+        if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+        shell: pwsh
+        run: |
+          $tag = $env:RELEASE_TAG
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') { throw "the tag must look like v1.2.3, got '$tag'" }
+          $version = $tag.Substring(1)
+          $line = Select-String -Path client/client.py -Pattern '^CLIENT_VERSION = "(.*)"' | Select-Object -First 1
+          if (-not $line -or $line.Matches[0].Groups[1].Value -ne $version) {
+            throw "client/client.py says $($line.Line), the tag says $version"
+          }
+          git tag $tag
+          git log -1 --format='%h %s' $tag
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -28,10 +107,14 @@ jobs:
       - name: Run client tests
         run: |
           pip install pytest
-          python -m pytest client/test_client.py client/test_plugin_installer.py client/test_local_server.py -q
+          python -m pytest client/ -q
       - name: Build TruckDash.exe
         working-directory: client
         run: pyinstaller TruckDash.spec
+      - uses: actions/download-artifact@v4
+        with:
+          name: TruckDash-MapBuilder
+          path: client
       - name: Package zip and checksums
         shell: pwsh
         working-directory: client
@@ -43,7 +126,10 @@ jobs:
           Compress-Archive -Path release/* -DestinationPath TruckDash-windows.zip -Force
           $zip = (Get-FileHash TruckDash-windows.zip -Algorithm SHA256).Hash.ToLower()
           $exe = (Get-FileHash dist/TruckDash.exe -Algorithm SHA256).Hash.ToLower()
-          "$zip  TruckDash-windows.zip`n$exe  TruckDash.exe" | Set-Content -Encoding ascii SHA256SUMS.txt
+          # El armador de mapas: el cliente lo baja de aca y lo verifica con esta linea.
+          $builder = Get-ChildItem TruckDash-MapBuilder-*.zip | Select-Object -First 1
+          $mb = (Get-FileHash $builder.FullName -Algorithm SHA256).Hash.ToLower()
+          "$zip  TruckDash-windows.zip`n$exe  TruckDash.exe`n$mb  $($builder.Name)" | Set-Content -Encoding ascii SHA256SUMS.txt
           Get-Content SHA256SUMS.txt
           "ZIP_SHA256=$zip" >> $env:GITHUB_ENV
           "EXE_SHA256=$exe" >> $env:GITHUB_ENV
@@ -53,29 +139,92 @@ jobs:
           path: |
             client/TruckDash-windows.zip
             client/SHA256SUMS.txt
+      - name: Push the release tag (manual run)
+        if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+        run: git push origin "refs/tags/${{ env.RELEASE_TAG }}"
+      - name: Write the release notes
+        # El changelog de la version va arriba; test_client.py ya exigio que
+        # exista (ver tools/changelog.py), asi que aca no deberia faltar.
+        if: env.RELEASE_TAG != ''
+        shell: pwsh
+        run: |
+          [Console]::OutputEncoding = [Text.UTF8Encoding]::new()
+          $cambios = (python tools/changelog.py $env:RELEASE_TAG) -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw "CHANGELOG.md has no section for $env:RELEASE_TAG" }
+          $notas = @"
+          ## What's new
+
+          $cambios
+
+          Full history: [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
+
+          ## Download
+
+          Built automatically by GitHub Actions from this tag (see the "Build client" workflow run for the full log).
+
+          **SHA-256**
+          - ``TruckDash-windows.zip``: ``$env:ZIP_SHA256``
+          - ``TruckDash.exe``: ``$env:EXE_SHA256``
+
+          ``TruckDash-MapBuilder-*.zip`` is optional: the client downloads it by itself, only if you use "Build my map" for map mods that are not on our servers. It is GPL-3.0 (built from truckermudgeon/maps with our patch; source in [builder/](https://github.com/${{ github.repository }}/tree/main/builder)).
+
+          Windows SmartScreen may warn about an unrecognized app because the executable is not code-signed: click "More info" → "Run anyway". Some antivirus engines flag the file for the same reason (an unsigned one-file PyInstaller executable that unpacks itself at startup) — it is a false positive; the source and this build log are public, and a code signing certificate for open source projects is in progress. The client is open source, needs no admin rights and only reads the game's telemetry.
+          "@
+          Set-Content -Path release-notes.md -Value $notas -Encoding utf8
+          Get-Content release-notes.md
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.RELEASE_TAG != ''
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             client/TruckDash-windows.zip
             client/SHA256SUMS.txt
-          body: |
-            Built automatically by GitHub Actions from this tag (see the "Build client" workflow run for the full log).
-
-            **SHA-256**
-            - `TruckDash-windows.zip`: `${{ env.ZIP_SHA256 }}`
-            - `TruckDash.exe`: `${{ env.EXE_SHA256 }}`
-
-            Windows SmartScreen may warn about an unrecognized app because the executable is not code-signed: click "More info" → "Run anyway". The client is open source, needs no admin rights and only reads the game's telemetry.
+            client/TruckDash-MapBuilder-*.zip
+          body_path: release-notes.md
+      - name: Tell the relay which version is the latest
+        # Sin este paso el Release existe y no lo recibe nadie: el cliente
+        # instalado pregunta /version al relay, y el relay sigue devolviendo
+        # la version anterior hasta que alguien la carga a mano. Paso entre
+        # 1.5.16 y 1.5.17: la release salio, el anuncio de Discord dijo que
+        # los clientes iban a recibir el aviso, y ninguno lo recibio.
+        #
+        # Va ANTES del anuncio a proposito. Si esto falla, el paso de Discord
+        # no corre: mejor quedarse callado que anunciar una actualizacion que
+        # despues no le llega a nadie.
+        #
+        # Solo corre si existe el secret ADMIN_KEY (repo -> Settings ->
+        # Secrets -> Actions), la misma clave de los endpoints /admin del
+        # relay.
+        if: env.RELEASE_TAG != ''
+        shell: pwsh
+        env:
+          ADMIN_KEY: ${{ secrets.ADMIN_KEY }}
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          # El contexto `secrets` no esta disponible en el `if:` de un paso.
+          if (-not $env:ADMIN_KEY) { Write-Host "ADMIN_KEY not set, skipping"; exit 0 }
+          $relay = "https://truck-companion-production.up.railway.app"
+          $version = $env:TAG.TrimStart("v")
+          $body = @{ latest_client_version = $version
+                     latest_client_sha256 = $env:ZIP_SHA256 } | ConvertTo-Json
+          $r = Invoke-RestMethod -Method Post -Uri "$relay/admin/stats/seed" `
+                 -Headers @{ "X-Admin-Key" = $env:ADMIN_KEY } `
+                 -ContentType "application/json" -Body $body
+          # La ruta filtra las claves que no conoce en silencio, asi que se
+          # comprueba lo que quedo y no lo que se mando.
+          if ($r.latest_client_version -ne $version) {
+            throw "el relay quedo en $($r.latest_client_version), se esperaba $version"
+          }
+          Write-Host "El relay ya ofrece $version"
       - name: Announce on Discord
         # Embed en el canal de releases del Discord. Solo si el secret
         # DISCORD_RELEASES_WEBHOOK existe (repo → Settings → Secrets → Actions).
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.RELEASE_TAG != ''
         shell: pwsh
         env:
           DISCORD_RELEASES_WEBHOOK: ${{ secrets.DISCORD_RELEASES_WEBHOOK }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
           REPO: ${{ github.repository }}
         run: |
           # El contexto `secrets` no esta disponible en el `if:` de un paso, por
@@ -83,7 +232,9 @@ jobs:
           if (-not $env:DISCORD_RELEASES_WEBHOOK) { Write-Host "DISCORD_RELEASES_WEBHOOK not set, skipping announcement"; exit 0 }
           $tag = $env:TAG
           # Notas: el cuerpo del ultimo commit del tag (la primera linea es el titulo).
-          $lines = (git log -1 --format=%B "$tag") -split "`n" | Where-Object { $_ -notmatch '^Co-Authored-By' }
+          # Las lineas de atribucion (Co-Authored-By, Claude-Session) son para
+          # el repo, no para el anuncio.
+          $lines = (git log -1 --format=%B "$tag") -split "`n" | Where-Object { $_ -notmatch '^(Co-Authored-By|Claude-Session):' }
           $title = $lines[0]
           $body = (($lines | Select-Object -Skip 1) -join "`n").Trim()
           if ($body.Length -gt 1500) { $body = $body.Substring(0, 1500) + "..." }
@@ -102,3 +253,98 @@ jobs:
             })
           } | ConvertTo-Json -Depth 6
           Invoke-RestMethod -Method Post -Uri $env:DISCORD_RELEASES_WEBHOOK -ContentType "application/json" -Body $payload
+
+  build-linux:
+    # Se compila en la LTS mas vieja que soportamos, a proposito: el binario de
+    # PyInstaller queda atado a la glibc de la maquina donde se arma, y la de
+    # 22.04 (2.35) anda en Ubuntu 22.04+, Debian 12+, Mint 21+, Zorin 17+,
+    # Fedora 35+ y cualquier Arch actual. Compilar en la ultima dejaria afuera
+    # a la mitad de esa lista sin que nadie se entere hasta que lo reporten.
+    #
+    # Sube el artefacto de la corrida, NO lo adjunta al Release, y esto NO es
+    # "hasta que alguien confirme". Lo de abajo salio del issue #6 (28-09-2026)
+    # y conviene tenerlo escrito antes de que a alguien le parezca un olvido:
+    #
+    # El binario nativo solo sirve para los builds NATIVOS de Linux de los
+    # juegos, y casi nadie los usa: son viejos, van por OpenGL y tienen mal
+    # soporte de mods, asi que en Linux se juega el build de Windows bajo
+    # Proton. Y ahi un cliente nativo no llega a la telemetria: el plugin
+    # publica adentro del prefijo de Wine, no en /dev/shm/SCSTelemetry, que es
+    # donde mira telemetry_compat en Linux. Encima el .so del plugin nativo ni
+    # lo empaquetamos; solo viaja el .dll.
+    #
+    # El camino que SI anda en Linux es el cliente de Windows adentro del
+    # prefijo del juego, documentado en client/README.md, y ese ya se publica
+    # como la descarga normal. El build de aca queda como canario de que el
+    # codigo sigue empaquetando y arrancando en Linux.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install system packages
+        # tkinter para la ventana de Setup, y las libs de X11 que usan
+        # python-xlib (teclas por XTEST y ventana del juego) y el backend
+        # Xorg de pystray para el icono de la bandeja.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk libxtst6 libxss1 xvfb
+      - name: Install dependencies
+        run: pip install -r client/requirements.txt
+      - name: Run client tests
+        run: |
+          pip install pytest
+          python -m pytest client/ -q
+      - name: Check the build interpreter has tkinter
+        # PyInstaller no falla cuando le falta un modulo: lo anota en el log
+        # y arma el binario igual, que despues muere al arrancar con
+        # ModuleNotFoundError. Lo que no tenga ESTE Python no va a estar en el
+        # binario, asi que se verifica antes y no despues de 3 minutos de build.
+        run: python -c "import tkinter; print('tkinter', tkinter.TkVersion)"
+      - name: Build TruckDash
+        working-directory: client
+        run: pyinstaller TruckDash.spec
+      - name: Smoke test the binary
+        env:
+          # El runner no tiene escritorio: sin display, pystray no encuentra
+          # backend y falla al importarse. Con xvfb se prueba el camino de
+          # verdad, el que tiene bandeja, en vez del degradado.
+          PYSTRAY_BACKEND: xorg
+        # Que compile no es que corra. --help sale por argparse antes de
+        # abrir ninguna ventana, pero para llegar ahi tiene que importar todo
+        # el programa: es la prueba mas barata de que el empaquetado quedo
+        # completo. Sin esto ya se nos escapo un binario sin tkinter.
+        working-directory: client
+        run: |
+          # 1) Con display, que es como corre en la maquina de un usuario.
+          xvfb-run -a ./dist/TruckDash --help > smoke-tray.txt 2>&1 || true
+          cat smoke-tray.txt
+          grep -q "usage:" smoke-tray.txt
+          # 2) Sin display: pystray falla al importarse y el cliente tiene que
+          # seguir vivo igual. Es el caso de GNOME sin la extension de
+          # AppIndicator, que no tiene bandeja, y ahi se cae este binario entero
+          # si el import no esta protegido.
+          env -u DISPLAY ./dist/TruckDash --help > smoke-sin-bandeja.txt 2>&1 || true
+          cat smoke-sin-bandeja.txt
+          grep -q "usage:" smoke-sin-bandeja.txt
+      - name: Package tarball and checksums
+        working-directory: client
+        run: |
+          mkdir -p release
+          cp dist/TruckDash release/TruckDash
+          cp README.md README.es.md release/
+          tar -czf TruckDash-linux-x86_64.tar.gz -C release .
+          tgz=$(sha256sum TruckDash-linux-x86_64.tar.gz | cut -d" " -f1)
+          bin=$(sha256sum dist/TruckDash | cut -d" " -f1)
+          echo "$tgz  TruckDash-linux-x86_64.tar.gz" > SHA256SUMS-linux.txt
+          echo "$bin  TruckDash" >> SHA256SUMS-linux.txt
+          cat SHA256SUMS-linux.txt
+          echo "glibc de la maquina que compilo:"
+          ldd --version | head -1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TruckDash-linux
+          path: |
+            client/TruckDash-linux-x86_64.tar.gz
+            client/SHA256SUMS-linux.txt

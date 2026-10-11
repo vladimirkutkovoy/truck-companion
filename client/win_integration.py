@@ -4,32 +4,268 @@ Integracion con Windows del cliente: inicio automatico con la sesion
 auto-update (bajar el zip nuevo, reemplazar el .exe y relanzar).
 """
 
+import ctypes
 import hashlib
 import io
 import json
 import logging
 import os
+import re
+import shlex
+import shutil
 import subprocess
 import sys
+import time
+import webbrowser
 import tempfile
 import zipfile
-from urllib.request import urlopen
+
+import red
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_VALUE_NAME = "TruckDash"
 AUTOSTART_FLAG = "--autostart"
+# Modo ayudante del .exe nuevo: no levanta nada, solo reemplaza y relanza.
+FINISH_UPDATE_FLAG = "--finish-update"
+STAGED_SUFFIX = ".new.exe"
+UPDATE_COPY_TRIES = 40
+UPDATE_COPY_WAIT = 0.5
+
+
+# Id del paquete en winget (manifiestos en microsoft/winget-pkgs).
+WINGET_ID = "Nethercap.TruckDash"
+
+
+def _executable() -> str:
+    # winget arranca los portables desde un symlink en WinGet\Links, una
+    # carpeta que comparten todos los paquetes: los settings, el log y la cola
+    # de la cuenta van al lado del .exe de verdad, no ahi.
+    exe = sys.executable
+    return os.path.realpath(exe) if os.path.islink(exe) else exe
 
 
 def base_dir() -> str:
-    return os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
+    return os.path.dirname(_executable() if getattr(sys, "frozen", False) else os.path.abspath(__file__))
 
 
 def exe_path() -> str | None:
-    return sys.executable if getattr(sys, "frozen", False) else None
+    if not getattr(sys, "frozen", False):
+        return None
+    # En un AppImage sys.executable es el binario de adentro del montaje, que
+    # deja de existir al cerrar el programa; el que sirve para volver a
+    # arrancarlo es el .AppImage, y esa ruta la pasa el runtime en APPIMAGE.
+    return os.environ.get("APPIMAGE") or _executable()
+
+
+def installed_by_winget(path: str | None = None) -> bool:
+    """Si este .exe lo instalo winget. winget guarda el hash del portable y,
+    si el .exe cambia, despues `winget upgrade` y `winget uninstall` se niegan
+    ("has been modified"): en ese caso el cliente no se actualiza solo.
+    Vive en ...\\WinGet\\Packages\\<id>_<fuente>\\, en LOCALAPPDATA o en
+    Archivos de programa segun el alcance."""
+    path = path or exe_path()
+    if not path:
+        return False
+    partes = [p.lower() for p in re.split(r"[\\/]+", path)]
+    return any(a == "winget" and b == "packages" for a, b in zip(partes, partes[1:]))
+
+
+def winget_upgrade_command() -> str:
+    return f"winget upgrade {WINGET_ID}"
 
 
 def settings_path() -> str:
     return os.path.join(base_dir(), "settings.json")
+
+
+_es_wine = None
+
+
+def is_wine() -> bool:
+    """Si este .exe corre bajo Wine/Proton en vez de Windows de verdad.
+
+    Wine agrega wine_get_version a ntdll; Windows no la tiene. Es la forma
+    que usa el propio proyecto Wine para que un programa se entere.
+    """
+    global _es_wine
+    if _es_wine is None:
+        try:
+            import ctypes
+            ctypes.windll.ntdll.wine_get_version
+            _es_wine = True
+        except Exception:
+            _es_wine = False
+    return _es_wine
+
+
+def quit_on_game_close_enabled() -> bool:
+    """Si hay que cerrar Truck Dash cuando se cierra el juego.
+
+    Por defecto solo bajo Proton, y ahi por una razon concreta: hay un
+    wineserver por prefijo y no termina hasta que se va el ultimo proceso de
+    Wine. Como el cliente tiene que vivir en el prefijo del juego para leer
+    la memoria compartida, mientras siga abierto el wineserver sigue vivo, el
+    wrapper de Proton que lanzo Steam sigue esperandolo, y Steam muestra el
+    juego como "Running" y no deja volver a lanzarlo.
+
+    En Windows no pasa nada de esto y quedarse en la bandeja es lo que
+    conviene: asi detecta solo el proximo arranque del juego.
+    """
+    valor = load_settings().get("quit_on_game_close")
+    if valor is None:
+        return is_wine()
+    return bool(valor)
+
+
+def set_quit_on_game_close(activo: bool) -> None:
+    settings = load_settings()
+    settings["quit_on_game_close"] = bool(activo)
+    save_settings(settings)
+
+
+def open_in_browser(url: str) -> bool:
+    """Abre la URL en el navegador. Devuelve False si no se pudo lanzar nada,
+    para que el llamador muestre la direccion y la copien a mano.
+
+    Bajo Wine no se usa webbrowser: termina en ShellExecute adentro de este
+    proceso, y bajo Proton eso tiraba abajo el cliente entero, sin traceback
+    (issue #12: se cerraba al tocar "Open dashboard"; en el log, lo ultimo
+    era la ventana sin titulo que crea ShellExecute). Se lanza winebrowser
+    como proceso aparte, que es lo mismo que haria ShellExecute: si Wine se
+    cae ahi, se cae ese proceso y no el cliente.
+    """
+    if not is_wine():
+        logging.info("Opening %s in the browser", url.split("?")[0])
+        return bool(webbrowser.open(url))
+    sistema = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\windows"
+    winebrowser = os.path.join(sistema, "system32", "winebrowser.exe")
+    logging.info("Opening %s in the browser (winebrowser)", url.split("?")[0])
+    try:
+        subprocess.Popen(
+            [winebrowser, url],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+        )
+    except OSError as exc:
+        logging.warning("Could not start winebrowser (%s)", exc)
+        return False
+    return True
+
+
+def open_dashboard_enabled() -> bool:
+    """Si al arrancar hay que abrir el tablero en el navegador.
+
+    Prendido por defecto: para quien usa Truck Dash en una sola PC, que se
+    abra solo es la mitad de la experiencia. Se puede apagar porque quien lo
+    abre en el celular o en una segunda pantalla no necesita ninguna ventana
+    en la maquina donde juega; y en Linux con gamescope esa ventana le roba
+    el foco al juego, que deja de recibir teclas hasta que hace clic de
+    vuelta (issue #6).
+    """
+    valor = load_settings().get("open_dashboard")
+    if valor is None:
+        return True
+    return bool(valor)
+
+
+def set_open_dashboard(activo: bool) -> None:
+    settings = load_settings()
+    settings["open_dashboard"] = bool(activo)
+    save_settings(settings)
+
+
+# Perfil de la red (Privada / Publica) de la placa que usa el modo LAN. Con la
+# red en Publica, Windows suele bloquear las conexiones que llegan del
+# celular aunque se haya tocado "Permitir" (por defecto el permiso es para
+# redes privadas), y el tablero por LAN no abre: el caso mas comun de "estoy
+# en la misma WiFi y no conecta" (log de un usuario del 10-10). None: no se
+# sabe, o no aplica (Linux, Wine).
+_red_publica = None
+
+
+def perfil_es_publico(salida: str):
+    """La salida de Get-NetConnectionProfile (NetworkCategory) -> True si es
+    Public, False si es Private o de dominio, None si no se entiende."""
+    valor = (salida or "").strip().splitlines()[-1:] or [""]
+    valor = valor[0].strip()
+    if valor == "Public":
+        return True
+    if valor in ("Private", "DomainAuthenticated"):
+        return False
+    return None
+
+
+def detectar_red_publica(ip) -> None:
+    """Pregunta a Windows el perfil de la red de esa IP. Tarda (PowerShell),
+    asi que se llama desde un hilo aparte; el resultado queda en
+    red_publica()."""
+    global _red_publica
+    if sys.platform != "win32" or is_wine() or not ip:
+        return
+    import ipaddress
+    try:
+        ip = str(ipaddress.IPv4Address(ip))
+    except ValueError:
+        return
+    script = ("$i=(Get-NetIPAddress -IPAddress '%s' -ErrorAction Stop).InterfaceIndex;"
+              "(Get-NetConnectionProfile -InterfaceIndex $i -ErrorAction Stop).NetworkCategory" % ip)
+    try:
+        salida = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                                capture_output=True, text=True, timeout=20,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        logging.info("No se pudo leer el perfil de la red: %s", exc)
+        return
+    _red_publica = perfil_es_publico(salida)
+    logging.info("Perfil de la red de %s: %s", ip, (salida or "").strip() or "?")
+
+
+def red_publica():
+    return _red_publica
+
+
+def overlay_supported() -> bool:
+    """El overlay en el juego (overlay.py) usa ventanas de Windows que Wine
+    no reproduce bien (transparencia y clics que pasan): bajo Proton no se
+    ofrece."""
+    return sys.platform == "win32" and not is_wine()
+
+
+def overlay_settings() -> dict:
+    """{'enabled', 'corner', 'size', 'items'} del overlay en el juego.
+    Apagado por defecto: es una ventana encima del juego y la tiene que pedir
+    uno. Sin 'items' guardado se muestra todo."""
+    import overlay
+    s = load_settings()
+    corner = s.get("overlay_corner")
+    size = s.get("overlay_size")
+    items = s.get("overlay_items")
+    hotkey = s.get("overlay_hotkey", overlay.DEFAULT_HOTKEY)
+    pos = s.get("overlay_pos")
+    pos_ok = (isinstance(pos, list) and len(pos) == 2
+              and all(isinstance(v, (int, float)) and 0 <= v <= 1 for v in pos))
+    if corner == overlay.CUSTOM and not pos_ok:
+        corner = None
+    return {
+        "enabled": overlay_supported() and bool(s.get("overlay")),
+        "corner": corner if corner in overlay.CORNERS + (overlay.CUSTOM,) else overlay.DEFAULT_CORNER,
+        "pos": tuple(pos) if pos_ok else None,
+        "size": size if size in overlay.SIZES else overlay.DEFAULT_SIZE,
+        "items": (tuple(i for i in overlay.ITEMS if i in items) if isinstance(items, list)
+                  else overlay.ITEMS),
+        "hotkey": hotkey if hotkey in overlay.HOTKEYS else overlay.DEFAULT_HOTKEY,
+    }
+
+
+def save_overlay_settings(**cambios) -> None:
+    claves = {"enabled": "overlay", "corner": "overlay_corner", "size": "overlay_size",
+              "items": "overlay_items", "hotkey": "overlay_hotkey", "pos": "overlay_pos"}
+    settings = load_settings()
+    for k, v in cambios.items():
+        settings[claves[k]] = list(v) if k in ("items", "pos") and v is not None else v
+    save_settings(settings)
 
 
 def load_settings() -> dict:
@@ -41,11 +277,173 @@ def load_settings() -> dict:
 
 
 def save_settings(settings: dict) -> None:
+    # A un temporal y despues os.replace: escribiendo encima, un corte de luz
+    # o un disco lleno a mitad de camino dejaba el archivo vacio o roto,
+    # load_settings devolvia {} y se perdian el codigo de pairing y la cuenta
+    # vinculada (auditoria del 10-10). Si el reemplazo falla (un antivirus con
+    # el archivo abierto), se escribe directo como antes.
+    path = settings_path()
+    tmp = path + ".tmp"
     try:
-        with open(settings_path(), "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        return
+    except Exception as exc:
+        logging.info(f"settings.json: escritura atomica fallo ({exc}), se escribe directo")
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    try:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(settings, f, indent=2)
     except Exception as exc:
         logging.warning(f"No se pudo guardar settings.json ({exc})")
+
+
+def in_temp_location(path: str | None = None) -> bool:
+    """True si el .exe esta corriendo desde una carpeta temporal, que es lo que
+    pasa cuando alguien lo abre con doble clic desde adentro del zip (7-Zip y
+    el Explorador lo extraen a %TEMP%\\7zXXXX o similar).
+
+    Registrarlo en el arranque desde ahi es doblemente malo: la ruta desaparece
+    cuando se limpia el temporal, y "programa en carpeta temporal que se agrega
+    a la clave Run" es justo el patron que Windows Defender marca como
+    Behavior:Win32/Persistence.A!ml (reportado en el issue #2).
+
+    En Linux el problema es el mismo con otro disfraz: un AppImage corrido
+    desde /tmp deja de existir cuando se limpia el temporal, y el .desktop de
+    autostart queda apuntando a la nada.
+    """
+    path = path or exe_path()
+    if not path:
+        return False
+    path = os.path.normcase(os.path.abspath(path))
+    candidates = [os.environ.get("TEMP"), os.environ.get("TMP"),
+                  os.path.join(os.environ.get("LOCALAPPDATA", ""), "Temp"),
+                  os.environ.get("TMPDIR"), tempfile.gettempdir()]
+    for base in candidates:
+        if not base:
+            continue
+        base = os.path.normcase(os.path.abspath(base))
+        if path == base or path.startswith(base + os.sep):
+            return True
+    # Red de seguridad para rutas que no salen de las variables de entorno.
+    # normcase solo pasa a minuscula en Windows, asi que aca se hace a mano.
+    bajo = path.lower()
+    return any(f"{os.sep}{nombre}{os.sep}" in bajo for nombre in ("temp", "tmp"))
+
+
+# Una sola instancia a la vez (issue #4): dos clientes leyendo la misma
+# memoria compartida y peleando por los puertos de LAN no tiene sentido, y
+# cada uno pide su propio codigo de pairing. El mutex lo libera Windows solo
+# cuando el proceso muere, asi que un cierre abrupto no deja trabado el
+# arranque siguiente.
+SINGLE_INSTANCE_MUTEX = r"Local\TruckDash-SingleInstance"
+ERROR_ALREADY_EXISTS = 183
+_single_instance_handle = None
+
+
+def acquire_single_instance(wait_seconds: float = 0.0) -> bool:
+    """True si esta es la unica instancia. Con wait_seconds espera a que la
+    anterior termine de salir (auto-update y "Codigo nuevo" relanzan el .exe:
+    el proceso viejo sigue vivo unos segundos mas)."""
+    global _single_instance_handle
+    if os.name != "nt":
+        return _acquire_single_instance_posix(wait_seconds)
+    import ctypes
+    # use_last_error: GetLastError() de ctypes.windll se pisa con el de
+    # cualquier otra llamada intermedia y devolvia basura.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    while True:
+        handle = kernel32.CreateMutexW(None, False, SINGLE_INSTANCE_MUTEX)
+        err = ctypes.get_last_error()
+        if handle and err != ERROR_ALREADY_EXISTS:
+            _single_instance_handle = handle  # no se cierra: vive con el proceso
+            return True
+        if handle:
+            kernel32.CloseHandle(handle)
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.25)
+
+
+# En Linux no hay mutex con nombre, pero un flock exclusivo hace lo mismo y
+# tiene la propiedad que importa: lo suelta el kernel cuando el proceso muere,
+# asi que un cierre abrupto (o un kill -9) no deja trabado el arranque
+# siguiente. El archivo vive en XDG_RUNTIME_DIR, que es por usuario y lo limpia
+# el sistema al cerrar sesion.
+SINGLE_INSTANCE_LOCK = "truckdash-single-instance.lock"
+
+
+def runtime_dir() -> str:
+    base = os.environ.get("XDG_RUNTIME_DIR")
+    if base and os.path.isdir(base):
+        return base
+    return tempfile.gettempdir()
+
+
+def single_instance_lock_path() -> str:
+    return os.path.join(runtime_dir(), SINGLE_INSTANCE_LOCK)
+
+
+def _acquire_single_instance_posix(wait_seconds: float = 0.0) -> bool:
+    global _single_instance_handle
+    import fcntl
+    path = single_instance_lock_path()
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError as exc:
+        # Sin donde escribir el lock no se puede decidir: mejor dejar arrancar
+        # que trabar al usuario por un permiso raro.
+        logging.warning(f"No se pudo abrir {path} ({exc}), se sigue sin instancia unica")
+        return True
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            os.ftruncate(fd, 0)
+            os.write(fd, str(os.getpid()).encode())
+            _single_instance_handle = fd  # no se cierra: vive con el proceso
+            return True
+        except OSError:
+            pass
+        if time.monotonic() >= deadline:
+            os.close(fd)
+            return False
+        time.sleep(0.25)
+
+
+# El codigo de pairing se reusa entre arranques: asi la web guardada en el
+# celular/tablet (trucksim-dash.com/app/?code=XXXXXXXX) sirve para siempre y
+# no hay que escanear un QR nuevo cada vez que se abre el juego (pedido de
+# Cobra, Discord 22-09-2026). Si alguien lo ve (stream, captura), el boton
+# "Codigo nuevo" de la ventana de Setup lo rota.
+PAIRING_CODE_RE = re.compile(r"^[A-Z0-9]{8}$")
+
+
+def saved_pairing_code() -> str | None:
+    code = (load_settings().get("pairing_code") or "").strip().upper()
+    return code if PAIRING_CODE_RE.match(code) else None
+
+
+def save_pairing_code(code: str) -> None:
+    settings = load_settings()
+    settings["pairing_code"] = code
+    save_settings(settings)
+
+
+def forget_pairing_code() -> None:
+    settings = load_settings()
+    if settings.pop("pairing_code", None) is not None:
+        save_settings(settings)
 
 
 def autostart_command() -> str | None:
@@ -55,7 +453,55 @@ def autostart_command() -> str | None:
     return f'"{exe}" {AUTOSTART_FLAG}'
 
 
+AUTOSTART_DESKTOP_NAME = "truckdash.desktop"
+
+
+def autostart_desktop_path() -> str:
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "autostart", AUTOSTART_DESKTOP_NAME)
+
+
+def autostart_desktop_entry() -> str | None:
+    exe = exe_path()
+    if not exe:
+        return None
+    return (
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=Truck Dash\n"
+        "Comment=Dashboard y GPS para ETS2/ATS\n"
+        f"Exec={shlex.quote(exe)} {AUTOSTART_FLAG}\n"
+        "Terminal=false\n"
+        "NoDisplay=true\n"
+        "X-GNOME-Autostart-enabled=true\n"
+    )
+
+
+def _is_autostart_enabled_posix() -> bool:
+    return os.path.isfile(autostart_desktop_path())
+
+
+def _set_autostart_posix(enabled: bool) -> bool:
+    path = autostart_desktop_path()
+    try:
+        if enabled:
+            entry = autostart_desktop_entry()
+            if not entry:
+                return False
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(entry)
+        elif os.path.exists(path):
+            os.remove(path)
+        return True
+    except OSError as exc:
+        logging.warning(f"No se pudo cambiar el inicio automatico ({exc})")
+        return False
+
+
 def is_autostart_enabled() -> bool:
+    if os.name != "nt":
+        return _is_autostart_enabled_posix()
     try:
         import winreg
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
@@ -68,6 +514,11 @@ def is_autostart_enabled() -> bool:
 def set_autostart(enabled: bool) -> bool:
     """Devuelve True si quedo como se pidio. Solo tiene sentido empaquetado
     (corriendo desde fuente no hay un .exe que registrar)."""
+    if enabled and in_temp_location():
+        logging.warning("Inicio automatico no registrado: el .exe corre desde una carpeta temporal")
+        return False
+    if os.name != "nt":
+        return _set_autostart_posix(enabled)
     try:
         import winreg
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
@@ -87,33 +538,42 @@ def set_autostart(enabled: bool) -> bool:
         return False
 
 
+def staged_exe_path() -> str | None:
+    """Donde se deja el .exe nuevo mientras se actualiza: al lado del actual,
+    para que el reemplazo final sea en el mismo disco."""
+    exe = exe_path()
+    return os.path.splitext(exe)[0] + STAGED_SUFFIX if exe else None
+
+
 def cleanup_old_exe() -> None:
-    # Despues de un auto-update, el .exe viejo queda renombrado al lado (no
-    # se puede borrar un .exe mientras corre) - se limpia en el proximo inicio.
+    # Despues de un auto-update quedan al lado el .exe viejo renombrado (de
+    # la forma anterior de actualizar) y el .new.exe que hizo de ayudante:
+    # ninguno de los dos se puede borrar mientras corre, se limpian en el
+    # proximo inicio.
     exe = exe_path()
     if not exe:
         return
-    old = exe + ".old"
-    if os.path.exists(old):
-        try:
-            os.remove(old)
-        except OSError:
-            pass
+    for leftover in (exe + ".old", staged_exe_path()):
+        if leftover and os.path.exists(leftover):
+            try:
+                os.remove(leftover)
+            except OSError:
+                pass
 
 
-def download_and_apply_update(download_url: str, expected_sha256: str | None, progress=None) -> str:
-    """Baja el zip del release, saca TruckDash.exe, lo pone en el lugar del
-    actual (renombrando el actual a .old) y relanza. Devuelve la ruta del
-    .exe nuevo. Levanta una excepcion con mensaje legible si algo falla, sin
-    dejar el .exe actual roto (solo se toca al final, cuando ya se verifico
-    el nuevo)."""
+def stage_update(download_url: str, expected_sha256: str | None, progress=None) -> str:
+    """Baja el zip, verifica el hash, saca TruckDash.exe y lo deja al lado del
+    actual como TruckDash.new.exe. No toca el .exe que esta corriendo: si algo
+    falla aca, la instalacion sigue intacta."""
     exe = exe_path()
     if not exe:
         raise RuntimeError("Auto-update only works with the packaged TruckDash.exe")
+    if installed_by_winget(exe):
+        raise RuntimeError(f"Installed with winget: update with `{winget_upgrade_command()}`")
 
     if progress:
         progress("downloading")
-    with urlopen(download_url, timeout=60) as resp:
+    with red.abrir(download_url, timeout=60) as resp:
         data = resp.read()
 
     if expected_sha256:
@@ -129,23 +589,84 @@ def download_and_apply_update(download_url: str, expected_sha256: str | None, pr
             raise RuntimeError("TruckDash.exe not found inside the downloaded zip")
         new_exe_bytes = zf.read(members[0])
 
-    tmp_dir = tempfile.mkdtemp(prefix="truckdash-update-")
-    new_exe_tmp = os.path.join(tmp_dir, "TruckDash.exe")
-    with open(new_exe_tmp, "wb") as f:
-        f.write(new_exe_bytes)
-
-    if progress:
-        progress("installing")
-    old = exe + ".old"
-    if os.path.exists(old):
-        os.remove(old)
-    os.rename(exe, old)
+    staged = staged_exe_path()
     try:
-        os.replace(new_exe_tmp, exe)
-    except OSError:
-        os.rename(old, exe)  # volver atras, el actual sigue sano
-        raise
-    return exe
+        with open(staged, "wb") as f:
+            f.write(new_exe_bytes)
+    except OSError as exc:
+        # Carpeta de solo lectura (Archivos de programa sin admin, por ej.):
+        # se cae aca, antes de haber tocado nada.
+        raise RuntimeError(f"Could not write {staged}: {exc}") from exc
+    return staged
+
+
+_SYNCHRONIZE = 0x00100000
+
+
+def wait_for_process(pid: int, timeout: float = 120.0) -> bool:
+    """Espera a que ese PID termine de verdad. Con un sleep fijo el .exe
+    viejo podia seguir vivo y el reemplazo fallaba igual."""
+    try:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    except (AttributeError, OSError):
+        time.sleep(2.0)  # fuera de Windows (tests): no hay a quien esperar
+        return True
+    k32.OpenProcess.restype = ctypes.c_void_p
+    k32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    k32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    handle = k32.OpenProcess(_SYNCHRONIZE, False, int(pid))
+    if not handle:
+        return True  # ya no existe
+    try:
+        return k32.WaitForSingleObject(ctypes.c_void_p(handle), int(timeout * 1000)) == 0
+    finally:
+        k32.CloseHandle(ctypes.c_void_p(handle))
+
+
+def start_updater(staged: str, relaunch_args: list[str] | None = None) -> None:
+    """Lanza el .exe nuevo en modo ayudante y le pasa el PID de este proceso
+    para que espere a que muera antes de reemplazarlo."""
+    target = exe_path()
+    args = [staged, FINISH_UPDATE_FLAG, "--target", target, "--wait-pid", str(os.getpid())]
+    args += list(relaunch_args or [])
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    subprocess.Popen(args, close_fds=True, env=child_environment(),
+                     cwd=os.path.dirname(target), creationflags=flags)
+
+
+def finish_update(target: str, wait_pid: int | None, relaunch_args: list[str] | None = None) -> int:
+    """Corre dentro del .exe nuevo, lanzado como ayudante. No toma el mutex de
+    instancia unica ni levanta nada: espera, reemplaza y arranca el
+    definitivo."""
+    if not target:
+        logging.error("finish_update sin --target")
+        return 2
+    if wait_pid:
+        if not wait_for_process(wait_pid):
+            logging.warning("El proceso %s no termino a tiempo, se intenta igual", wait_pid)
+    source = exe_path() or sys.executable
+    last_error = None
+    for attempt in range(UPDATE_COPY_TRIES):
+        try:
+            shutil.copy2(source, target)
+            last_error = None
+            break
+        except OSError as exc:
+            # Tipicamente el antivirus todavia tiene el archivo tomado: se
+            # reintenta en vez de quedarse esperando para siempre.
+            last_error = exc
+            if attempt == 0:
+                logging.info("No se pudo reemplazar todavia (%s), reintentando", exc)
+            time.sleep(UPDATE_COPY_WAIT)
+    if last_error is not None:
+        logging.error("No se pudo reemplazar %s: %s", target, last_error)
+        return 1
+    logging.info("Actualizacion aplicada sobre %s, arrancando", target)
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    subprocess.Popen([target, *(relaunch_args or [])], close_fds=True, env=child_environment(),
+                     cwd=os.path.dirname(target), creationflags=flags)
+    return 0
 
 
 def child_environment() -> dict:
@@ -159,13 +680,36 @@ def child_environment() -> dict:
     return {k: v for k, v in os.environ.items() if not k.startswith("_PYI_") and k != "_MEIPASS2"}
 
 
+RELAUNCH_FLAG = "--relaunch"
+
+
+def stop_and_exit(stop_callback=None) -> None:
+    """Cierra este proceso, ordenadamente si se puede. Con stop_callback (ej.
+    parar el icono de la bandeja) el bootloader de PyInstaller limpia su
+    carpeta temporal sin quejarse; si en 5 s no termino, se fuerza."""
+    if stop_callback:
+        import threading
+        threading.Timer(5.0, lambda: os._exit(0)).start()
+        try:
+            stop_callback()
+            return
+        except Exception:
+            pass
+    os._exit(0)
+
+
 def relaunch_and_exit(exe: str, extra_args: list[str] | None = None, stop_callback=None) -> None:
     """Lanza el .exe nuevo como proceso independiente y cierra este. Con
     stop_callback (ej. parar el icono de la bandeja) el cierre es ordenado, y
     el bootloader de PyInstaller limpia su carpeta temporal sin quejarse; si
     en 5 s no termino, se fuerza."""
     flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    subprocess.Popen([exe, *(extra_args or [])], close_fds=True, env=child_environment(), cwd=os.path.dirname(exe), creationflags=flags)
+    # RELAUNCH_FLAG: este proceso todavia tiene el mutex de instancia unica un
+    # par de segundos mas, el nuevo tiene que esperarlo en vez de rendirse.
+    args = list(extra_args or [])
+    if RELAUNCH_FLAG not in args:
+        args.append(RELAUNCH_FLAG)
+    subprocess.Popen([exe, *args], close_fds=True, env=child_environment(), cwd=os.path.dirname(exe), creationflags=flags)
     if stop_callback:
         import threading
         threading.Timer(5.0, lambda: os._exit(0)).start()

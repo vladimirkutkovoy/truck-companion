@@ -9,13 +9,17 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    # Un test colgado (un websocket esperando para siempre) dejaba el job
+    # corriendo hasta el limite de 6 h de GitHub, sin log: --timeout lo corta
+    # a los 60 s con el traceback del test que se colgo.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - run: pip install -r backend/requirements-dev.txt
-      - run: python -m pytest backend/test_main.py -v
+      - run: python -m pytest backend/test_main.py -v --timeout=60
 
   client:
     runs-on: windows-latest
@@ -26,7 +30,28 @@ jobs:
           python-version: '3.12'
       - run: pip install -r client/requirements.txt
       - run: python -m pip install pytest
-      - run: python -m pytest client/test_client.py client/test_plugin_installer.py client/test_local_server.py -v
+      - run: python -m pytest client/ -v
+      # El plugin (plugin/) no se compila en cada push, solo con "Build
+      # plugin": esto avisa en el momento si un cambio no compila.
+      - run: powershell -File plugin/build.ps1 -OutDir "$env:RUNNER_TEMP\plugin"
+
+  # El cliente tambien corre en Linux (bajo Proton, y algun dia nativo), y
+  # ahi hay cosas que en Windows no se ven: las rutas distinguen mayusculas y
+  # no hay winreg. Hasta ahora esto solo se probaba al publicar un tag, asi
+  # que un test roto se descubria recien en el release, y se pasaron dos asi.
+  client-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # xvfb para que las pruebas de la ventana de Setup corran de verdad en
+      # vez de saltearse por falta de pantalla.
+      - run: sudo apt-get update && sudo apt-get install -y python3-tk libxtst6 libxss1 xvfb
+      - run: pip install -r client/requirements.txt
+      - run: python -m pip install pytest
+      - run: xvfb-run -a python -m pytest client/ -v
 
   web:
     runs-on: ubuntu-latest
@@ -35,4 +60,39 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: node --test docs/app/test_pure.js docs/app/test_map_controls.js
+      - run: node --test docs/app/test_pure.js
+      # Avisos de giro de 50 rutas reales (ATS y ETS2, grafo de R2) contra
+      # tools/avisos-golden.json: un cambio de codigo que cambia lo que se
+      # anuncia falla y lista cada aviso. Si cambio el grafo, solo avisa.
+      - run: node tools/check_avisos.js
+      # La guia cae al ingles clave por clave: sin esto, un texto que falta
+      # en un idioma pasa sin que nadie lo note.
+      - run: node --test docs/guide/test_guide.js
+      # Un apostrofo sin escapar en una traduccion rompio todo el script
+      # inline de la landing en produccion sin que nada fallara (22-09-2026).
+      - run: python tools/check_inline_js.py
+      # docs/app/variants.js se genera del manifest: si alguien edita uno sin
+      # regenerar el otro, la app publica versiones de mapa que no existen.
+      - run: python tools/build_variants_js.py --check
+      # Los POIs publicados: empresas con ciudad sin nombre hacian que buscar
+      # la ciudad no diera nada (Gulfport, 10-10), y nada lo detectaba.
+      - run: python tools/check_pois.py
+      # check_inline_js.py mira el JS incrustado en el HTML; esto mira los
+      # .js sueltos, que es donde viven las traducciones. Un apostrofo sin
+      # escapar en una de ellas rompe el archivo entero y con el la pagina.
+      - run: for f in $(git ls-files 'docs/*.js' 'docs/**/*.js'); do node --check "$f" || exit 1; done
+
+  # La web abierta en un navegador de verdad: la demo de ATS con los datos de
+  # mapa de produccion (R2), el aviso sin WebGL y las demas paginas sin
+  # errores de JavaScript. Los tests de arriba prueban la logica, pero un
+  # error al arrancar app.js dejaba el tablero muerto sin que nada fallara.
+  web-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install playwright
+      - run: python -m playwright install --with-deps chromium
+      - run: python tools/smoke_web.py

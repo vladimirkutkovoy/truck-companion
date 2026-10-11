@@ -1,6 +1,18 @@
 """Tests de las funciones puras de client.py (sin tocar el SDK/websocket real)."""
 
+import inspect
+import os
+import pathlib
+import sys
+import tempfile
+
+import pytest
+
 import client
+import i18n
+import keys_compat
+import win_integration
+import window_compat
 
 
 def test_http_base_url_converts_ws_schemes():
@@ -21,6 +33,12 @@ def test_build_payload_converts_speed_from_ms_to_kmh():
     assert payload["speedKmh"] == round(27.78 * 3.6, 1)
     assert payload["speedLimitKmh"] == round(22.22 * 3.6, 1)
     assert payload["game"] == "ats"
+
+
+def test_build_payload_manda_la_marca_del_vehiculo():
+    """La web distingue auto de camion por la marca (ver isDrivingCar)."""
+    assert client.build_payload({"game": 2, "truckBrandId": "ford"})["truckBrandId"] == "ford"
+    assert client.build_payload({"game": 2, "truckBrandId": ""})["truckBrandId"] is None
 
 
 def test_build_payload_maps_game_enum():
@@ -49,6 +67,21 @@ def test_build_payload_handles_missing_fields_gracefully():
 
 def test_build_payload_job_deadline_seconds_from_game_minutes():
     payload = client.build_payload({"time_abs": 1000, "time_abs_delivery": 1090})
+    assert payload["jobDeadlineSeconds"] == 90 * 60
+
+
+def test_build_payload_reloj_del_convoy():
+    # fuera del convoy el offset es 0
+    assert client.build_payload({"time_abs": 1000})["gameTimeMinutes"] == 1000
+    assert client.build_payload({"time_abs": 1000, "multiplayerTimeOffset": 0})["gameTimeMinutes"] == 1000
+    # en el convoy, el reloj del servidor; el plugin escribe un s32 en un
+    # campo de 64 bits, asi que un offset negativo llega como 2^32 - n
+    assert client.build_payload({"time_abs": 1000, "multiplayerTimeOffset": 300})["gameTimeMinutes"] == 1300
+    assert client.build_payload({"time_abs": 1000, "multiplayerTimeOffset": 2**32 - 120})["gameTimeMinutes"] == 880
+    assert client.build_payload({"time_abs": 1000, "multiplayerTimeOffset": -120})["gameTimeMinutes"] == 880
+    assert client.build_payload({})["gameTimeMinutes"] is None
+    # el plazo del trabajo sigue en el reloj de la economia local, como sus dos puntas
+    payload = client.build_payload({"time_abs": 1000, "time_abs_delivery": 1090, "multiplayerTimeOffset": 300})
     assert payload["jobDeadlineSeconds"] == 90 * 60
 
 
@@ -86,7 +119,7 @@ def test_send_game_command_ignored_when_no_key_assigned(monkeypatch):
 def test_send_game_command_ignored_when_game_window_not_found(monkeypatch):
     monkeypatch.setattr(client, "find_game_window", lambda: None)
     called = []
-    monkeypatch.setattr(client.pydirectinput, "press", lambda key: called.append(key))
+    monkeypatch.setattr(client.keys_compat, "press", lambda key: called.append(key))
     client.send_game_command("toggle_hazards", client.DEFAULT_KEYBINDS)
     assert called == []
 
@@ -96,7 +129,7 @@ def test_send_game_command_presses_key_and_focuses_window(monkeypatch):
     focused = []
     monkeypatch.setattr(client, "bring_window_to_foreground", lambda hwnd: focused.append(hwnd))
     pressed = []
-    monkeypatch.setattr(client.pydirectinput, "press", lambda key: pressed.append(key))
+    monkeypatch.setattr(client.keys_compat, "press", lambda key: pressed.append(key))
     client.send_game_command("toggle_hazards", client.DEFAULT_KEYBINDS)
     assert focused == [12345]
     assert pressed == ["z"]
@@ -242,7 +275,7 @@ def test_attach_job_snapshot_if_finished_attaches_on_delivered_or_cancelled():
     # Primero un tick sin evento (estado conocido = false), despues la entrega:
     # una entrega vista en el primer tick del proceso es un flag heredado, no
     # se adjunta nada (ver edge_filter_job_events).
-    client._last_event_state.update({"jobDelivered": None, "jobCancelled": None})
+    client.reset_event_state()
     client.attach_job_snapshot_if_finished({"event": {"jobDelivered": False, "jobCancelled": False}})
     payload = {"event": {"jobDelivered": True}}
     client.attach_job_snapshot_if_finished(payload)
@@ -252,22 +285,57 @@ def test_attach_job_snapshot_if_finished_attaches_on_delivered_or_cancelled():
 
 
 def test_attach_job_snapshot_if_finished_noop_when_no_event():
+    # Sin heredar el estado del test anterior: con la marca que se invierte,
+    # pasar de true a false SI es una entrega.
+    client.reset_event_state()
+    client.attach_job_snapshot_if_finished({"event": {"jobDelivered": False, "jobCancelled": False}})
     payload = {"event": {"jobDelivered": False, "jobCancelled": False}}
     client.attach_job_snapshot_if_finished(payload)
     assert "jobSrc" not in payload["event"]
 
 
-def test_job_delivered_sent_only_on_rising_edge_never_on_first_tick():
-    client._last_event_state.update({"jobDelivered": None, "jobCancelled": None})
+def test_cada_cambio_de_la_marca_es_una_entrega_y_nunca_el_primer_tick():
+    """El plugin INVIERTE la marca en cada entrega (^= true): la primera la
+    pone en true, la segunda en false. Las dos son entregas."""
+    client.reset_event_state()
     def tick(delivered):
         payload = {"event": {"jobDelivered": delivered, "jobCancelled": False}}
         client.attach_job_snapshot_if_finished(payload)
         return payload["event"]["jobDelivered"]
-    assert tick(True) is False    # flag heredado de antes de arrancar: no es una entrega nueva
+    assert tick(True) is False    # marca heredada de antes de arrancar: no es una entrega nueva
     assert tick(True) is False
-    assert tick(False) is False
-    assert tick(True) is True     # transicion real
-    assert tick(True) is False    # sigue en true: no se repite
+    assert tick(False) is True    # segunda entrega de la partida: true -> false
+    assert tick(False) is False   # un solo tick, es un pulso
+    assert tick(True) is True     # tercera
+
+
+def test_las_multas_y_los_peajes_tambien_se_invierten():
+    client.reset_event_state()
+    def tick(**marcas):
+        payload = {"event": dict({"tollgate": False, "fined": False}, **marcas)}
+        client.edge_filter_job_events(payload)
+        return payload["event"]
+    tick()
+    assert tick(tollgate=True)["tollgate"] is True
+    assert tick(tollgate=True)["tollgate"] is False
+    assert tick(tollgate=False)["tollgate"] is True     # el segundo peaje
+    assert tick(tollgate=False, fined=True)["fined"] is True
+
+
+def test_reabrir_la_telemetria_no_inventa_una_entrega():
+    """El juego reiniciado deja todo en false: si el estado anterior era true,
+    eso no es un cambio de verdad."""
+    client.reset_event_state()
+    def tick(delivered):
+        payload = {"event": {"jobDelivered": delivered}}
+        client.edge_filter_job_events(payload)
+        return payload["event"]["jobDelivered"]
+    tick(False)
+    assert tick(True) is True
+    client.reset_event_state()           # se cerro y se abrio el juego
+    assert tick(False) is False          # el primer tick solo fija el estado
+    assert tick(False) is False          # y quieto no hay nada
+    assert tick(True) is True            # la primera entrega de la partida nueva
 
 
 SAMPLE_LOG = (
@@ -292,11 +360,735 @@ def test_parse_active_mods_none_without_list():
     assert client.parse_active_mods("00:00:01 : [hashfs] base.scs: Created") is None
 
 
+NO_MODS = {"promods": False, "promods_canada": False, "c2c": False, "rusmap": False, "reforma": False, "roextended": False, "grand_utopia": False, "eu_grand_utopia": False, "canada_expansion": False, "truckersmp": False}
+
+
+def test_parse_custom_key():
+    assert client.parse_custom_key("f5") == ["f5"]
+    assert client.parse_custom_key("Ctrl+Shift+F5") == ["ctrl", "shift", "f5"]
+    assert client.parse_custom_key("num7") == ["num7"]
+    assert client.parse_custom_key("alt+f4") is None
+    assert client.parse_custom_key("win+r") is None
+    assert client.parse_custom_key("ctrl+ctrl+a") is None
+    assert client.parse_custom_key("ctrl+") is None
+    assert client.parse_custom_key("") is None
+    assert client.parse_custom_key(None) is None
+    # F24 no viene de fabrica en ninguno de los tres backends: si se acepta
+    # en la lista blanca, los tres tienen que saber mandarla.
+    assert client.parse_custom_key("f24") == ["f24"]
+    assert "f24" in keys_compat.WINDOWS_EXTRA_SCANCODES
+    assert "f24" in keys_compat.LINUX_KEYCODES
+    assert keys_compat.x11_keysym_name("f24") == "F24"
+
+
+def test_is_truckersmp_session():
+    # linea real de un game.log.txt jugando por el launcher de TruckersMP (2026-09-21)
+    real = r"00:00:01.855 : [fs] device C:\Users\x\AppData\Roaming\TruckersMP\installation/data/ets2/mods/data1.mp mounted to mod pool."
+    assert client.is_truckersmp_session(real)
+    assert not client.is_truckersmp_session(SAMPLE_LOG)
+    # un mod cualquiera con "truckersmp" en el nombre no cuenta
+    assert not client.is_truckersmp_session("[mods] Active local mod truckersmp_skin (name: TruckersMP skin, version: 1, author: x)")
+
+
 def test_detect_map_mods_flags():
-    assert client.detect_map_mods(client.parse_active_mods(SAMPLE_LOG)) == {"promods": True, "promods_canada": False, "c2c": False}
+    assert client.detect_map_mods(client.parse_active_mods(SAMPLE_LOG)) == {**NO_MODS, "promods": True}
     mods = [
         {"file": "promods-ats-canada-v164", "name": "ProMods Canada", "version": "1.64", "author": "ProMods"},
         {"file": "coast2coast_v2.15", "name": "Coast to Coast", "version": "2.15", "author": "Mantrid"},
     ]
-    assert client.detect_map_mods(mods) == {"promods": False, "promods_canada": True, "c2c": True}
-    assert client.detect_map_mods([]) == {"promods": False, "promods_canada": False, "c2c": False}
+    assert client.detect_map_mods(mods) == {**NO_MODS, "promods_canada": True, "c2c": True}
+    assert client.detect_map_mods([]) == NO_MODS
+
+
+def test_detect_map_mods_rusmap_with_promods():
+    mods = [{"file": "promods-eu-map-v284.scs", "name": "ProMods Europe"}, {"file": "RusMap_Map.scs", "name": "RusMap 2.61"}, {"file": "cnx-pm-v284-rm-v261.scs", "name": "ProMods 2.84 - RusMap 2.61 Connector"}]
+    assert client.detect_map_mods(mods) == {**NO_MODS, "promods": True, "rusmap": True}
+
+
+def test_detect_map_mods_reforma_roex_gu():
+    ats = [{"file": "Reforma_2_9_9_160.scs", "name": "Reforma 2.9.9.160"}, {"file": "Reforma_MegaResources_v2_9_9_160.scs", "name": "Reforma Mega Resources"}, {"file": "Coast_to_Coast_v2.23.61.0.scs", "name": "Coast to Coast v2.23.61.0"}]
+    assert client.detect_map_mods(ats) == {**NO_MODS, "reforma": True, "c2c": True}
+    roex = [{"file": "ROEX53PMME284.scs", "name": "ROEX53PMME284"}, {"file": "161Hybrid2v3.scs", "name": "161Hybrid2v3"}, {"file": "promods-eu-map-v284.scs", "name": "ProMods Europe"}]
+    assert client.detect_map_mods(roex) == {**NO_MODS, "roextended": True, "promods": True}
+    assert client.detect_map_mods([{"file": "161Hybrid2v3.scs", "name": "161Hybrid2v3"}]) == {**NO_MODS, "roextended": True}
+    gu = [{"file": "GU - Grand Utopia (v1.20c).scs", "name": "Grand Utopia"}]
+    assert client.detect_map_mods(gu) == {**NO_MODS, "grand_utopia": True}
+
+
+def test_qr_image_is_dark_on_light_with_quiet_zone():
+    """Issue #3: el QR salia invertido (claro sobre oscuro) y la camara de
+    Samsung no lo leia. Esquina = zona silenciosa clara, centro del patron de
+    posicion = oscuro."""
+    import local_server
+
+    img = local_server.qr_image("http://192.168.1.50:27765", box_size=4)
+    assert img.getpixel((0, 0)) == (255, 255, 255)          # zona silenciosa
+    assert img.getpixel((4 * 6, 4 * 6)) == (0, 0, 0)        # centro del ojo (modulo 6,6)
+    assert img.size[0] >= 4 * (21 + 8)                      # borde de 4 modulos por lado
+
+
+def test_in_temp_location_detects_zip_extraction(monkeypatch, tmp_path):
+    """Issue #2: abierto desde adentro del zip, Windows lo extrae a %TEMP%\7zXXXX
+    y registrar el arranque desde ahi es lo que Defender marca como persistencia.
+    En Linux el equivalente es un AppImage corrido desde /tmp: la ruta que
+    guarda el .desktop de autostart desaparece cuando se limpia el temporal."""
+    import win_integration
+
+    temp = tmp_path / "Temp"
+    (temp / "7zOC649DA39").mkdir(parents=True)
+    monkeypatch.setenv("TEMP", str(temp))
+    monkeypatch.setenv("TMP", str(temp))
+    monkeypatch.setenv("TMPDIR", str(temp))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    assert win_integration.in_temp_location(str(temp / "7zOC649DA39" / "TruckDash.exe")) is True
+    assert win_integration.in_temp_location(None) is False
+
+    if sys.platform == "win32":
+        assert win_integration.in_temp_location(r"C:\Games\TruckDash\TruckDash.exe") is False
+        assert win_integration.in_temp_location(r"D:\Temp\TruckDash.exe") is True  # cualquier carpeta "Temp"
+    else:
+        # Una ruta con barras invertidas en Linux no es una ruta, es UN nombre
+        # de archivo, asi que las de arriba no probarian nada aca.
+        assert win_integration.in_temp_location("/opt/truckdash/TruckDash") is False
+        assert win_integration.in_temp_location("/tmp/.mount_abc123/TruckDash") is True
+
+
+def test_pairing_code_is_reused_between_runs(monkeypatch, tmp_path):
+    """Pedido de Discord: el link guardado en el celular tiene que seguir
+    sirviendo, asi que el codigo se guarda y se reusa (solo si es valido)."""
+    import win_integration
+
+    monkeypatch.setattr(win_integration, "settings_path", lambda: str(tmp_path / "settings.json"))
+    assert win_integration.saved_pairing_code() is None
+    win_integration.save_pairing_code("AB12CD34")
+    assert win_integration.saved_pairing_code() == "AB12CD34"
+    win_integration.save_pairing_code("no-es-un-codigo")
+    assert win_integration.saved_pairing_code() is None      # basura guardada = se pide uno nuevo
+    win_integration.save_pairing_code("AB12CD34")
+    win_integration.forget_pairing_code()
+    assert win_integration.saved_pairing_code() is None
+
+
+def test_single_instance_guard(monkeypatch):
+    """Issue #4: la segunda instancia no arranca. Se usa un nombre de mutex
+    propio del test para no chocar con un Truck Dash real abierto."""
+    import uuid
+    import win_integration
+
+    monkeypatch.setattr(win_integration, "SINGLE_INSTANCE_MUTEX", rf"Local\TruckDashTest-{uuid.uuid4().hex}")
+    monkeypatch.setattr(win_integration, "_single_instance_handle", None)
+    assert win_integration.acquire_single_instance() is True
+    assert win_integration.acquire_single_instance() is False          # ya tomado
+    assert win_integration.acquire_single_instance(0.5) is False       # y esperar no lo libera
+
+
+def test_relaunch_passes_the_wait_flag(monkeypatch):
+    """El .exe nuevo tiene que esperar a que el viejo suelte el mutex, si no
+    el auto-update y el boton 'Codigo nuevo' dejarian de arrancar."""
+    import win_integration
+
+    launched = {}
+    monkeypatch.setattr(win_integration.subprocess, "Popen",
+                        lambda cmd, **kw: launched.setdefault("cmd", cmd))
+    monkeypatch.setattr(win_integration.os, "_exit", lambda code: None)
+    win_integration.relaunch_and_exit(r"C:\TruckDash\TruckDash.exe", ["--autostart"])
+    assert launched["cmd"][1:] == ["--autostart", win_integration.RELAUNCH_FLAG]
+
+
+def test_discord_activity_from_telemetry():
+    """Rich Presence: lo que ve la gente en el perfil. Sin juego no se publica
+    nada, y en pausa no se muestra el viaje como si siguiera andando."""
+    import discord_presence as dp
+
+    act = dp.activity_from_telemetry(
+        {"game": "ats", "citySrc": "Salt Lake City", "cityDst": "Las Vegas",
+         "cargo": "Bulldozer", "routeDistanceKm": 712.4}, started_at=1000)
+    assert act["details"] == "Salt Lake City \u2192 Las Vegas"
+    assert "712" in act["state"] and "Bulldozer" in act["state"]
+    assert act["assets"]["small_image"] == "ats"
+    assert act["timestamps"] == {"start": 1000}
+
+    assert dp.activity_from_telemetry({"game": None}) is None
+    assert dp.activity_from_telemetry(None) is None
+    pausada = dp.activity_from_telemetry({"game": "ets2", "cityDst": "Praha", "paused": True})
+    assert "Praha" in pausada["details"] and "km" not in pausada["state"]
+
+
+def test_discord_frame_encoding():
+    import struct
+    import discord_presence as dp
+
+    frame = dp.encode_frame(dp.OP_HANDSHAKE, {"v": 1, "client_id": "123"})
+    op, length = struct.unpack("<II", frame[:8])
+    assert op == dp.OP_HANDSHAKE and length == len(frame) - 8
+    assert b'"client_id": "123"' in frame
+
+
+def test_discord_stays_quiet_without_application_id():
+    """Sin ID configurado no se abre ningun hilo ni se toca el pipe."""
+    import discord_presence as dp
+
+    presence = dp.DiscordPresence(application_id="")
+    presence.set_enabled(True)
+    assert presence._thread is None
+    presence.close()
+
+
+def test_telemetry_compat_elige_el_bloque_segun_el_sistema(monkeypatch):
+    """En Windows el bloque tiene nombre de objeto; en Linux es un archivo en
+    /dev/shm. Y en Linux NO se usa multiprocessing.shared_memory, que al
+    cerrar le hace unlink al bloque del plugin y deja al juego publicando en
+    el vacio (comprobado en WSL)."""
+    import telemetry_compat
+
+    assert telemetry_compat.BLOCK_SIZE == 32 * 1024
+    assert telemetry_compat.WINDOWS_NAME == r"Local\SCSTelemetry"
+    assert telemetry_compat.LINUX_PATH == "/dev/shm/SCSTelemetry"
+
+    fuente = inspect.getsource(telemetry_compat._open_named)
+    rama_linux = fuente.split("if IS_WINDOWS:")[1].split("return _mem.buf")[1]
+    assert "SharedMemory" not in rama_linux, "en Linux hay que mapear el archivo a mano"
+    assert "mmap.mmap" in rama_linux
+
+
+def test_telemetry_compat_prefiere_el_bloque_de_truck_dash(monkeypatch):
+    """Nuestro plugin publica en TruckDashTelemetry, al lado del
+    scs-telemetry.dll de otras apps (Trucky), que sigue en SCSTelemetry. Se
+    lee el nuestro si esta, que trae los trabajos con auto; si no, el de
+    siempre."""
+    import telemetry_compat
+
+    assert telemetry_compat.WINDOWS_NAMES == (r"Local\TruckDashTelemetry", r"Local\SCSTelemetry")
+    assert telemetry_compat.LINUX_PATHS == ("/dev/shm/TruckDashTelemetry", "/dev/shm/SCSTelemetry")
+
+    existen = set()
+    abiertos = []
+
+    def abrir(nombre):
+        if nombre not in existen:
+            raise FileNotFoundError(nombre)
+        abiertos.append(nombre)
+        return b""
+
+    monkeypatch.setattr(telemetry_compat, "_open_named", abrir)
+    nombres = telemetry_compat.WINDOWS_NAMES if telemetry_compat.IS_WINDOWS else telemetry_compat.LINUX_PATHS
+    try:
+        with pytest.raises(FileNotFoundError):
+            telemetry_compat._open_buffer()
+        existen.add(nombres[1])
+        telemetry_compat._open_buffer()
+        assert telemetry_compat.opened_block() == nombres[1]
+        existen.add(nombres[0])
+        telemetry_compat._open_buffer()
+        assert telemetry_compat.opened_block() == nombres[0]
+        assert abiertos == [nombres[1], nombres[0]]
+    finally:
+        telemetry_compat.deinit()
+    assert telemetry_compat.opened_block() is None
+
+
+def test_todas_las_teclas_permitidas_existen_en_los_tres_backends():
+    """La lista blanca de teclas custom es una sola, pero se manda por tres
+    caminos distintos (pydirectinput, XTEST, uinput). Si alguien suma una
+    tecla a la lista y se olvida de mapearla, en Linux fallaria recien
+    cuando un usuario la apriete."""
+    for key in sorted(client.CUSTOM_KEY_ALLOWED | set(client.CUSTOM_KEY_MODIFIERS)):
+        assert key in keys_compat.LINUX_KEYCODES, f"{key} no tiene keycode de Linux"
+        assert keys_compat.x11_keysym_name(key), f"{key} no tiene keysym de X11"
+
+
+def test_los_keycodes_de_linux_no_se_repiten():
+    codigos = list(keys_compat.LINUX_KEYCODES.values())
+    repetidos = {c for c in codigos if codigos.count(c) > 1}
+    assert not repetidos, f"dos teclas comparten codigo: {repetidos}"
+
+
+def test_en_linux_no_se_manda_nada_por_pydirectinput(monkeypatch):
+    """pydirectinput no existe fuera de Windows: el backend de Linux tiene
+    que ser XTEST o uinput, nunca ese."""
+    monkeypatch.setattr(keys_compat, "IS_WINDOWS", False)
+    intentados = []
+
+    class Falla:
+        def __init__(self, *a, **k):
+            intentados.append(self.name)
+            raise RuntimeError("no disponible en el test")
+
+    class XTestFalla(Falla):
+        name = "xtest"
+
+    class UinputFalla(Falla):
+        name = "uinput"
+
+    monkeypatch.setattr(keys_compat, "XTestBackend", XTestFalla)
+    monkeypatch.setattr(keys_compat, "UinputBackend", UinputFalla)
+    monkeypatch.setattr(keys_compat, "_backend", None)
+    monkeypatch.setattr(keys_compat, "_tried", False)
+    monkeypatch.setattr(keys_compat, "_reason", "")
+
+    assert keys_compat.available() is False
+    # XTEST primero (no pide permisos), uinput despues.
+    assert intentados == ["xtest", "uinput"]
+    # El motivo que ve el usuario nombra los dos caminos que fallaron.
+    assert "xtest" in keys_compat.unavailable_reason()
+    assert "uinput" in keys_compat.unavailable_reason()
+    keys_compat._tried = False
+    keys_compat._backend = None
+
+
+# --------------------------------------------------------------------------
+# Integracion con Linux: el inicio automatico es un .desktop y la instancia
+# unica un flock. Se prueba la logica pura, que es igual en los dos sistemas.
+# --------------------------------------------------------------------------
+
+def test_autostart_desktop_respeta_xdg_config_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    ruta = win_integration.autostart_desktop_path()
+    assert ruta == str(tmp_path / "cfg" / "autostart" / "truckdash.desktop")
+    monkeypatch.delenv("XDG_CONFIG_HOME")
+    assert win_integration.autostart_desktop_path().endswith(
+        os.path.join(".config", "autostart", "truckdash.desktop"))
+
+
+def test_autostart_desktop_entry_cita_la_ruta(monkeypatch):
+    """Casi todas las instalaciones de Steam viven en rutas con espacios, y un
+    Exec= sin comillas se parte en dos y no arranca nada."""
+    monkeypatch.setattr(win_integration, "exe_path", lambda: "/home/x/mis apps/Truck Dash.AppImage")
+    entry = win_integration.autostart_desktop_entry()
+    exec_line = [l for l in entry.splitlines() if l.startswith("Exec=")][0]
+    assert "'/home/x/mis apps/Truck Dash.AppImage'" in exec_line
+    assert exec_line.endswith(win_integration.AUTOSTART_FLAG)
+    assert entry.startswith("[Desktop Entry]")
+
+    monkeypatch.setattr(win_integration, "exe_path", lambda: None)
+    assert win_integration.autostart_desktop_entry() is None
+
+
+def test_lock_de_instancia_unica_va_en_el_runtime_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    assert win_integration.single_instance_lock_path() == str(
+        tmp_path / win_integration.SINGLE_INSTANCE_LOCK)
+    # Si la variable apunta a algo que no existe se cae al temporal, no se
+    # revienta: sin lock es preferible dejar arrancar.
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "no-existe"))
+    assert win_integration.runtime_dir() == tempfile.gettempdir()
+
+
+def test_exe_path_prefiere_el_appimage(monkeypatch):
+    """Adentro de un AppImage sys.executable es el binario extraido en el
+    montaje, que desaparece al cerrar; para el inicio automatico hay que
+    guardar la ruta del .AppImage."""
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", "/tmp/.mount_abc/truckdash")
+    monkeypatch.setenv("APPIMAGE", "/home/x/TruckDash.AppImage")
+    assert win_integration.exe_path() == "/home/x/TruckDash.AppImage"
+    monkeypatch.delenv("APPIMAGE")
+    assert win_integration.exe_path() == "/tmp/.mount_abc/truckdash"
+
+
+def test_reconoce_la_carpeta_de_winget():
+    """Alcance de usuario y de maquina. Una carpeta que solo se llama
+    parecido no cuenta: ahi el autoupdate propio es el unico que hay."""
+    assert win_integration.installed_by_winget(
+        r"C:\Users\x\AppData\Local\Microsoft\WinGet\Packages"
+        r"\Nethercap.TruckDash_Microsoft.Winget.Source_8wekyb3d8bbwe\TruckDash.exe")
+    assert win_integration.installed_by_winget(
+        r"C:\Program Files\WinGet\Packages\Nethercap.TruckDash_Microsoft.Winget.Source_8wekyb3d8bbwe\TruckDash.exe")
+    assert not win_integration.installed_by_winget(r"C:\Users\x\Documents\TruckDash\TruckDash.exe")
+    assert not win_integration.installed_by_winget(r"C:\Users\x\Downloads\winget-packages\TruckDash.exe")
+    assert not win_integration.installed_by_winget(r"D:\Games\Packages\TruckDash.exe")
+
+
+def test_con_winget_no_se_actualiza_solo(monkeypatch):
+    """Si el .exe se pisa solo, winget ve el hash cambiado y despues no deja
+    ni actualizar ni desinstalar sin --force. Tiene que fallar antes de
+    bajar nada."""
+    monkeypatch.setattr(win_integration, "exe_path", lambda: (
+        r"C:\Users\x\AppData\Local\Microsoft\WinGet\Packages\Nethercap.TruckDash_x\TruckDash.exe"))
+    monkeypatch.setattr(win_integration.red, "abrir",
+                        lambda *a, **k: pytest.fail("no deberia bajar nada"))
+    with pytest.raises(RuntimeError, match="winget upgrade Nethercap.TruckDash"):
+        win_integration.stage_update("https://example.invalid/x.zip", None)
+
+
+def test_los_archivos_van_al_lado_del_exe_real_no_del_symlink(monkeypatch, tmp_path):
+    """winget arranca el portable desde un symlink en WinGet\\Links, que
+    comparten todos los paquetes."""
+    real = tmp_path / "Packages" / "TruckDash.exe"
+    real.parent.mkdir()
+    real.write_bytes(b"MZ")
+    links = tmp_path / "Links"
+    links.mkdir()
+    link = links / "truckdash.exe"
+    try:
+        os.symlink(real, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("sin permiso para crear symlinks")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(link))
+    monkeypatch.delenv("APPIMAGE", raising=False)
+    assert os.path.samefile(win_integration.base_dir(), real.parent)
+    assert os.path.samefile(win_integration.exe_path(), real)
+    assert os.path.samefile(os.path.dirname(client.keybinds_path()), real.parent)
+
+
+def test_idioma_desde_el_entorno(monkeypatch):
+    """En Linux el idioma sale del entorno. LANGUAGE puede traer una lista
+    ('pt_BR:pt:en') y manda el primero."""
+    monkeypatch.setattr(i18n.sys, "platform", "linux")
+    for var in ("LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("LANGUAGE", "pt_BR:pt:en")
+    assert i18n.detect_language() == "pt"
+    monkeypatch.delenv("LANGUAGE")
+    monkeypatch.setenv("LANG", "de_DE.UTF-8")
+    assert i18n.detect_language() == "de"
+    # "C" no es un idioma: hay que seguir buscando, no devolver 'c'.
+    monkeypatch.setenv("LC_ALL", "C")
+    assert i18n.detect_language() == "de"
+
+
+def test_heading_deg_convierte_la_convencion_del_sdk():
+    """El SDK da el rumbo en <0,1) y ANTIHORARIO (0 norte, 0.25 oeste, 0.5 sur,
+    0.75 este; ver scssdk_value.h). El mapa lo quiere en grados de brujula,
+    horario. Invertir el sentido sin querer deja la flecha espejada y es el
+    tipo de error que no se nota hasta que alguien gira."""
+    assert client.heading_deg({"rotationX": 0.0}) == 0.0      # norte
+    assert client.heading_deg({"rotationX": 0.25}) == 270.0   # oeste
+    assert client.heading_deg({"rotationX": 0.5}) == 180.0    # sur
+    assert client.heading_deg({"rotationX": 0.75}) == 90.0    # este
+    assert client.heading_deg({"rotationX": 0.125}) == 315.0  # noroeste
+    # El juego puede mandar valores fuera de <0,1) al dar vueltas: se normaliza.
+    assert client.heading_deg({"rotationX": 1.25}) == 270.0
+    # Y si no viene, no se inventa: la web cae a deducirlo del desplazamiento.
+    assert client.heading_deg({}) is None
+    assert client.heading_deg({"rotationX": None}) is None
+    assert client.heading_deg({"rotationX": "no es un numero"}) is None
+
+
+def test_el_payload_lleva_el_rumbo():
+    payload = client.build_payload({"rotationX": 0.25, "coordinateX": 1, "coordinateZ": 2})
+    assert payload["heading"] == 270.0
+    # Sin el campo el payload igual sale, con heading en None.
+    assert client.build_payload({"coordinateX": 1})["heading"] is None
+
+
+def test_el_payload_lleva_de_que_mercado_salio_el_trabajo():
+    """De que mercado salio el trabajo decide si el SDK informa o no la
+    empresa de destino, y sin empresa la web cae al centro de la ciudad.
+    Teniendo el dato se puede explicar la diferencia en vez de que parezca
+    un destino equivocado."""
+    p = client.build_payload({"jobMarket": "cargo_market", "specialJob": True,
+                              "plannedDistanceKm": 1557, "coordinateX": 0})
+    assert p["jobMarket"] == "cargo_market"
+    assert p["specialJob"] is True
+    assert p["plannedDistanceKm"] == 1557
+    vacio = client.build_payload({"coordinateX": 0})
+    assert vacio["jobMarket"] is None and vacio["specialJob"] is False
+
+
+def test_la_entrega_adjunta_los_detalles_del_tick():
+    """jobDeliveredCargoDamage y compania solo tienen valor en el momento del
+    pulso: el juego los llena justo al entregar."""
+    client._last_event_state.update({"jobDelivered": False, "jobCancelled": False})
+    client.update_job_snapshot({"onJob": True, "cityDst": "Pärnu", "citySrc": "Tromsø",
+                                "cargo": "Luxury Yacht", "jobMarket": "cargo_market",
+                                "specialJob": True})
+    payload = {"event": {"jobDelivered": True}}
+    client.attach_job_snapshot_if_finished(payload, {"jobDeliveredCargoDamage": 0.25,
+                                                     "jobDeliveredEarnedXp": 340,
+                                                     "jobDeliveredDeliveryTime": 90})
+    e = payload["event"]
+    assert e["jobDst"] == "Pärnu" and e["jobCargo"] == "Luxury Yacht"
+    assert e["jobMarket"] == "cargo_market" and e["jobSpecial"] is True
+    assert e["jobCargoDamage"] == 0.25 and e["jobEarnedXp"] == 340
+
+    # Sin el raw no se inventan los detalles, pero el resto sigue saliendo.
+    client._last_event_state.update({"jobDelivered": False, "jobCancelled": False})
+    payload2 = {"event": {"jobDelivered": True}}
+    client.attach_job_snapshot_if_finished(payload2)
+    assert payload2["event"]["jobDst"] == "Pärnu"
+    assert "jobCargoDamage" not in payload2["event"]
+
+
+TITULOS = ("Euro Truck Simulator 2", "American Truck Simulator")
+
+
+def test_la_ventana_del_juego_se_reconoce_por_el_ejecutable():
+    """El titulo lo cambian Proton, TruckersMP, los mods y el idioma del
+    juego; el nombre del .exe no. Por eso manda el ejecutable."""
+    ventanas = [
+        (1, "Discord", "discord.exe"),
+        (2, "", "eurotrucks2.exe"),          # sin titulo y aun asi es el juego
+        (3, "Euro Truck Simulator 2", "otracosa.exe"),
+    ]
+    assert window_compat.match_game_window(ventanas, TITULOS) == 2
+
+
+def test_la_ventana_se_reconoce_aunque_el_titulo_tenga_cosas_alrededor():
+    """TruckersMP y varios mods le agregan texto al titulo, y FindWindowW
+    comparaba exacto: la ventana estaba ahi y deciamos que no."""
+    for titulo in ("Euro Truck Simulator 2",
+                   "Euro Truck Simulator 2 - TruckersMP",
+                   "[MP] Euro Truck Simulator 2 1.61"):
+        ventanas = [(1, "Firefox", "firefox.exe"), (7, titulo, "")]
+        assert window_compat.match_game_window(ventanas, TITULOS) == 7, titulo
+
+
+def test_no_se_confunde_con_otra_ventana_que_hable_de_camiones():
+    ventanas = [
+        (1, "Trucky Mods Manager", "trucky mods manager.exe"),
+        (2, "ETS2 - YouTube - Firefox", "firefox.exe"),
+    ]
+    assert window_compat.match_game_window(ventanas, TITULOS) is None
+    assert window_compat.match_game_window([], TITULOS) is None
+
+
+def test_una_ventana_de_otro_programa_con_el_nombre_del_juego_no_es_el_juego():
+    # Log del 10-10: Chrome, el Explorador (Documentos\American Truck
+    # Simulator), Steam y opentrack se tomaban por el juego.
+    for titulo, exe in (("American Truck Simulator - YouTube - Google Chrome", "chrome.exe"),
+                        ("American Truck Simulator", "explorer.exe"),
+                        ("American Truck Simulator", "steamwebhelper.exe"),
+                        ("opentrack - Euro Truck Simulator 2", "opentrack.exe")):
+        assert window_compat.match_game_window([(3, titulo, exe)], TITULOS) is None, exe
+
+
+def test_trailer_wear_none_without_trailer():
+    # Sin remolque el SDK devuelve las ranuras en cero, que no es lo mismo
+    # que un remolque impecable: la web esconde la fila.
+    assert client.trailer_wear({"trailer": [{"attached": False, "wearChassis": 0.0}]}) is None
+    assert client.trailer_wear({}) is None
+    assert client.cargo_damage({"trailer": [{"attached": False, "cargoDamage": 0.0}]}) is None
+
+
+def test_trailer_wear_reads_the_first_attached_trailer():
+    raw = {"trailer": [
+        {"attached": True, "wearChassis": 0.12, "wearWheels": 0.03, "wearBody": 0.01},
+        {"attached": False, "wearChassis": 0.99},
+    ]}
+    assert client.trailer_wear(raw) == {"chassis": 0.12, "wheels": 0.03, "body": 0.01}
+
+
+def test_cargo_damage_takes_the_worst_of_a_double():
+    # Con un doble el pago lo castiga el remolque que llego peor.
+    raw = {"trailer": [
+        {"attached": True, "cargoDamage": 0.04},
+        {"attached": True, "cargoDamage": 0.31},
+    ]}
+    assert client.cargo_damage(raw) == 0.31
+
+
+def test_build_payload_forwards_the_panel_fields():
+    # Estaban en el bloque del plugin desde siempre; faltaba reenviarlos.
+    raw = {
+        "adblue": 42.0, "adblueCapacity": 80.0, "oilPressure": 54.0,
+        "brakeTemperature": 31.0, "retarderBrake": 2, "retarderStepCount": 3,
+        "motorBrake": True, "lightsParking": True, "lightsBrake": False,
+        "lightsReverse": False, "adblueWarning": False, "oilPressureWarning": True,
+        "fuelWarning": True,
+        "trailer": [{"attached": True, "wearChassis": 0.2, "wearWheels": 0.1,
+                     "wearBody": 0.05, "cargoDamage": 0.07}],
+    }
+    payload = client.build_payload(raw)
+    assert payload["adblue"] == 42.0
+    assert payload["oilPressure"] == 54.0
+    assert payload["brakeTemperature"] == 31.0
+    assert payload["retarder"] == 2 and payload["retarderSteps"] == 3
+    assert payload["motorBrake"] is True
+    assert payload["lights"]["parking"] is True
+    assert payload["mechanicalWarnings"]["oilPressure"] is True
+    assert payload["mechanicalWarnings"]["fuel"] is True
+    assert payload["trailerWear"]["chassis"] == 0.2
+    assert payload["cargoDamage"] == 0.07
+
+
+def test_build_payload_panel_fields_absent_stay_none():
+    # Un bloque sin esos campos (plugin viejo) no puede romper el payload ni
+    # inventar ceros: la web esconde lo que no llega.
+    payload = client.build_payload({})
+    for campo in ("adblue", "oilPressure", "brakeTemperature", "retarder",
+                  "trailerWear", "cargoDamage"):
+        assert payload[campo] is None, campo
+
+
+def test_lan_server_serves_every_file_the_pages_load():
+    # El modo LAN sirve una lista fija de archivos. Agregar un .js a la web y
+    # olvidarse de la lista deja el tablero roto SOLO en LAN, que es donde
+    # nadie prueba: la pagina carga y el script falta. Paso con
+    # i18n_en_es.js. Esto lo cruza contra lo que el HTML pide de verdad.
+    import re
+    import local_server
+
+    raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    servidos = set(local_server.WEB_FILES)
+    faltan = []
+    for pagina, carpeta in (("docs/app/index.html", "app"), ("docs/dash/index.html", "dash")):
+        html = open(os.path.join(raiz, pagina.replace("/", os.sep)), encoding="utf-8").read()
+        for ref in re.findall(r'(?:src|href)="([^"]+)"', html):
+            if ref.startswith(("http", "//", "#", "data:")):
+                continue
+            rel = ref.split("?", 1)[0]
+            # Los ../ se resuelven contra la carpeta de la pagina.
+            partes = (carpeta + "/" + rel).split("/")
+            limpio = []
+            for p in partes:
+                if p == "..":
+                    limpio.pop()
+                elif p not in ("", "."):
+                    limpio.append(p)
+            destino = "/".join(limpio)
+            if not destino.endswith((".js", ".css", ".json", ".svg", ".png")):
+                continue
+            if destino not in servidos:
+                faltan.append(pagina + " -> " + destino)
+    assert not faltan, "no estan en WEB_FILES: " + ", ".join(faltan)
+
+
+# ---------------------------------------------------------------- changelog
+
+def _changelog_tool():
+    import importlib.util
+    ruta = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "changelog.py")
+    spec = importlib.util.spec_from_file_location("changelog", ruta)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_la_version_del_cliente_tiene_su_changelog():
+    """Cada release lleva su seccion en CHANGELOG.md: de ahi sale el cuerpo
+    de la release en GitHub. Al subir CLIENT_VERSION sin escribirla, esto
+    falla en CI y en el build de la release, antes de publicar nada."""
+    cl = _changelog_tool()
+    with open(cl.CHANGELOG, encoding="utf-8") as f:
+        texto = f.read()
+    cuerpo = cl.seccion(texto, client.CLIENT_VERSION)
+    assert cuerpo, f"CHANGELOG.md no tiene seccion para {client.CLIENT_VERSION}"
+    assert cuerpo.lstrip().startswith("- ")
+
+
+def test_changelog_seccion_corta_en_la_siguiente():
+    cl = _changelog_tool()
+    texto = "# Changelog\n\n## Unreleased\n\n- nada\n\n## 1.2.30 (x)\n\n- treinta\n\n## 1.2.3 (2026-01-01)\n\n- tres\n- otra\n\n## 1.2.2\n\n- dos\n"
+    assert cl.seccion(texto, "v1.2.3") == "- tres\n- otra"
+    assert cl.seccion(texto, "1.2.2") == "- dos"
+    assert cl.seccion(texto, "1.2.30") == "- treinta"
+    assert cl.seccion(texto, "1.2.4") is None
+    assert cl.seccion("## 1.0.0\n\n## 0.9.0\n- x\n", "1.0.0") is None
+
+
+def test_european_grand_utopia_no_es_el_standalone():
+    """Con European Grand Utopia se cargan el y el Grand Utopia original: la
+    marca aparte es la que le dice a la web que es Europa, no el mapa de
+    Grand Utopia solo."""
+    eugu = [{"file": "European Grand Utopia v1.12 by Adyox.scs", "name": "European Grand Utopia"},
+            {"file": "GU - Grand Utopia (v1.20d).scs", "name": "Grand Utopia"}]
+    assert client.detect_map_mods(eugu) == {**NO_MODS, "grand_utopia": True, "eu_grand_utopia": True}
+    con_promods = eugu + [
+        {"file": "European Grand Utopia v1.12 for Promods by Adyox.scs",
+         "name": "European Grand Utopia for Promods"},
+        {"file": "promods-def-v284.scs", "name": "ProMods Definition"}]
+    banderas = client.detect_map_mods(con_promods)
+    assert banderas["eu_grand_utopia"] and banderas["promods"]
+    solo = [{"file": "GU - Grand Utopia (v1.20d).scs", "name": "Grand Utopia"}]
+    assert client.detect_map_mods(solo)["eu_grand_utopia"] is False
+
+
+def test_canada_expansion_no_es_promods_canada():
+    """Western/Eastern Canada Expansion es otro mapa que ProMods Canada: con
+    la misma marca la web elegiria la variante equivocada."""
+    canada = [{"file": "Western_Canada_Expansion_v1.7.3.scs", "name": "Western Canada Expansion v1.7.3"},
+              {"file": "Eastern_Canada_Expansion_v1.2.1.scs", "name": "Eastern Canada Expansion v1.2.1"}]
+    assert client.detect_map_mods(canada) == {**NO_MODS, "canada_expansion": True}
+    # Desde el Workshop el archivo es un numero: alcanza con el nombre
+    assert client.detect_map_mods([{"file": "3301234567", "name": "Eastern Canada Expansion v1.2.1"}])["canada_expansion"]
+    con_c2c = canada + [{"file": "Western_Canada_C2C_Only_Connections_v1.7.3.scs", "name": "Western Canada C2C Only Connections v1.7.3"},
+                        {"file": "Coast_to_Coast_v2.24.61.0.scs", "name": "Coast to Coast v2.24.61.0"}]
+    assert client.detect_map_mods(con_c2c) == {**NO_MODS, "canada_expansion": True, "c2c": True}
+    pm = [{"file": "promods-canada-def-v164.scs", "name": "ProMods Canada Definition"}]
+    assert client.detect_map_mods(pm) == {**NO_MODS, "promods_canada": True}
+
+
+
+def test_active_mod_names_sin_repetidos_recortados_y_con_tope():
+    mods = [
+        {"file": "mapa_sudamerica_v3", "name": "Mapa  Sudamérica", "version": "3.0", "author": "Alguien"},
+        {"file": "otro", "name": "Mapa Sudamérica"},
+        {"file": "solo_archivo", "name": None},
+        {"file": "x", "name": "y" * 200},
+    ]
+    nombres = client.active_mod_names(mods)
+    assert nombres == ["Mapa Sudamérica", "solo_archivo", "y" * client.ACTIVE_MOD_NAME_LEN]
+    assert client.active_mod_names(None) is None
+    muchos = [{"name": f"mod {i}"} for i in range(client.ACTIVE_MOD_NAMES_MAX + 20)]
+    assert len(client.active_mod_names(muchos)) == client.ACTIVE_MOD_NAMES_MAX
+
+
+def test_dlc_de_mapa_instalados_por_los_archivos_de_la_carpeta(tmp_path):
+    raiz = tmp_path / "American Truck Simulator"
+    (raiz / "bin" / "win_x64").mkdir(parents=True)
+    for nombre in ("dlc_co.scs", "DLC_SD.scs", "dlc_kenworth_w900.scs", "base_map.scs"):
+        (raiz / nombre).write_bytes(b"")
+    assert client.installed_map_dlcs(str(raiz), "ats") == ["co", "sd"]   # sin camiones ni el base
+    assert client.installed_map_dlcs(str(tmp_path / "no-existe"), "ats") is None
+    instalaciones = [{"game": "ats", "bin_dir": str(raiz / "bin" / "win_x64")},
+                     {"game": "ets2", "bin_dir": str(tmp_path / "no-existe" / "bin" / "win_x64")}]
+    # ETS2 sin carpeta legible: no aparece, que no es lo mismo que "ninguno"
+    assert client.read_installed_dlcs(instalaciones) == {"ats": ["co", "sd"]}
+
+
+def test_dlc_de_mapa_los_mismos_ids_que_la_web():
+    """Un id que la web no conoce se pierde en silencio: el DLC quedaria
+    siempre como "no lo tenes"."""
+    pure = (pathlib.Path(__file__).resolve().parent.parent / "docs" / "app" / "pure.js").read_text(encoding="utf-8")
+    for game, archivos in client.MAP_DLC_FILES.items():
+        for dlc_id in archivos.values():
+            assert f"'{dlc_id}'" in pure, (game, dlc_id)
+
+
+def test_perfil_de_red_publico():
+    # "estoy en la misma WiFi y no conecta" (10-10): la red en Publica
+    import win_integration
+    assert win_integration.perfil_es_publico("Public\r\n") is True
+    assert win_integration.perfil_es_publico("Private") is False
+    assert win_integration.perfil_es_publico("DomainAuthenticated") is False
+    assert win_integration.perfil_es_publico("") is None
+
+
+def test_lan_anota_cada_ip_remota_una_vez(caplog):
+    import logging
+    import local_server
+    local_server._remotos_vistos.clear()
+    with caplog.at_level(logging.INFO):
+        local_server.anotar_remoto("127.0.0.1", "pagina (27765)")
+        local_server.anotar_remoto("192.168.1.40", "pagina (27765)")
+        local_server.anotar_remoto("192.168.1.40", "pagina (27765)")
+        local_server.anotar_remoto("192.168.1.40", "datos (27766)")
+    lineas = [r.getMessage() for r in caplog.records if r.getMessage().startswith("LAN:")]
+    assert lineas == ["LAN: pagina (27765) desde 192.168.1.40", "LAN: datos (27766) desde 192.168.1.40"]
+
+
+def test_cambiar_los_mods_borra_el_fuera_del_mapa_viejo(monkeypatch):
+    # Usuario del 10-10: un "fuera del mapa" (falso) dejaba "Build my map" en
+    # Setup toda la sesion. Se olvida cuando cambian los mods de ese juego, no
+    # con el None de mientras carga el juego.
+    import tray_client
+    st = tray_client.state
+    monkeypatch.setattr(st, "offmap_games", set())
+    monkeypatch.setattr(st, "last_known_mods", {})
+    monkeypatch.setattr(st, "map_mods", None)
+    monkeypatch.setattr(st, "map_mods_read_at", 0)
+    lecturas = iter([{"ats": {"c2c": True}}, {"ats": None}, {"ats": {"c2c": True}},
+                     {"ats": {"c2c": True, "canada_expansion": True}}])
+    monkeypatch.setattr(tray_client.client_lib, "read_map_mods", lambda: next(lecturas))
+    monkeypatch.setattr(tray_client.client_lib, "read_active_mod_names", lambda: None)
+    monkeypatch.setattr(tray_client.client_lib, "read_mounted_mods", lambda: None)
+    monkeypatch.setattr(tray_client, "refresh_local_maps", lambda: False)
+    tray_client.refresh_map_mods(force=True)
+    st.offmap_games.add("ats")
+    tray_client.refresh_map_mods(force=True)   # el juego recarga: None
+    tray_client.refresh_map_mods(force=True)   # vuelven los mismos
+    assert "ats" in st.offmap_games
+    tray_client.refresh_map_mods(force=True)   # cambiaron de verdad
+    assert "ats" not in st.offmap_games

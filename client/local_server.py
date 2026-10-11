@@ -6,10 +6,9 @@ sufre los cortes periodicos del proxy de Railway; el modo cloud (pairing
 code) sigue funcionando en paralelo para todo lo demas.
 
 Dos servidores en el PC:
-  - HTTP  (puerto 27765): sirve una copia del web app (index.html, app.js,
-    ...) bajada de trucksim-dash.com al arrancar (cache en %LOCALAPPDATA%),
-    asi el modo LAN siempre corre la misma version que el sitio sin tener
-    que re-empaquetar el .exe.
+  - HTTP  (puerto 27765): sirve la web empaquetada con el cliente si existe;
+    en desarrollo usa una copia bajada de trucksim-dash.com (cache en
+    %LOCALAPPDATA%).
   - WS    (puerto 27766): broadcast de cada payload de telemetria a los
     viewers conectados + comandos de la botonera (mismo protocolo que el
     backend).
@@ -21,18 +20,21 @@ ws:// a una IP de la LAN (mixed content, lo bloquean todos los navegadores)
 """
 
 import asyncio
+import errno
 import http.server
 import json
 import logging
 import os
 import socket
 import sys
-import threading
 import shutil
+import threading
 from urllib.error import HTTPError
 from urllib.request import Request
 from urllib.request import urlopen
 from urllib.parse import parse_qs, urlencode, urlsplit
+
+import red
 
 import client as client_lib
 
@@ -48,8 +50,26 @@ def has_bundled_web() -> bool:
 
 
 WEB_FILES = [
-    "app/index.html", "app/app.js", "app/app.css", "app/i18n.js", "app/pure.js",
-    "app/manifest.json", "app/assets/logo.svg", "app/assets/icon-192.png", "app/assets/icon-512.png",
+    "app/index.html", "app/app.js", "app/app.css", "app/i18n.js", "app/i18n_en_es.js",
+    "app/pure.js", "app/manifest.json",
+    # Estos tres faltaban desde siempre: en LAN se bajaban al vuelo si habia
+    # internet, y sin internet la app quedaba sin variantes de mapa, sin
+    # convoy y sin mapa en vivo. Justo lo que el modo LAN promete resolver.
+    "app/variants.js", "app/convoy.js", "app/livemap.js",
+    "app/assets/logo.svg", "app/assets/icon-192.png", "app/assets/icon-512.png",
+    # El mapa. Antes venian de jsDelivr y en LAN sin internet no habia mapa.
+    "app/vendor/maplibre-gl-4.7.1.js", "app/vendor/maplibre-gl-4.7.1.css",
+    "app/vendor/pmtiles-3.2.0.js", "app/vendor/proj4-2.15.0.js",
+    # El panel de tablero: la app lo muestra a pantalla completa y
+    # ademas se sirve solo en /dash/ para un segundo dispositivo.
+    "dash/index.html", "dash/dash.js", "dash/dash.css", "dash/page.js",
+    "dash/page.css", "dash/manifest.json",
+    # Guia por voz: el catalogo y un paquete por voz (la version va en el
+    # nombre, como vendor/: no se vuelven a bajar). Ver tools/build_voice_packs.py.
+    "app/voice/voices.json",
+    "app/voice/en-kristin-v2.json", "app/voice/en-joe-v2.json", "app/voice/es-daniela-v2.json",
+    "app/voice/es-claude-v2.json", "app/voice/de-thorsten-v2.json", "app/voice/fr-siwis-v2.json",
+    "app/voice/pt-cadu-v2.json", "app/voice/pl-gosia-v2.json", "app/voice/ru-dmitri-v2.json",
 ]
 
 
@@ -59,7 +79,29 @@ def cache_dir() -> str:
     base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
     path = os.path.join(base, "TruckDash", "webcache")
     os.makedirs(os.path.join(path, "app", "assets"), exist_ok=True)
+    os.makedirs(os.path.join(path, "app", "vendor"), exist_ok=True)
+    os.makedirs(os.path.join(path, "app", "voice"), exist_ok=True)
+    os.makedirs(os.path.join(path, "dash"), exist_ok=True)
     return path
+
+
+# Que dispositivos de la red llegaron, una vez por IP y por puerto: sin esto
+# el log no distinguia al celular de la pestana de la propia PC, y con "no me
+# conecta por LAN" no habia forma de saber si el celular llegaba a la pagina,
+# solo a la pagina (27766 cerrado) o a nada (firewall, red Publica, router
+# con aislamiento). Log de un usuario del 10-10.
+_remotos_vistos: set = set()
+_remotos_lock = threading.Lock()
+
+
+def anotar_remoto(ip, que: str) -> None:
+    if not ip or ip.startswith("127.") or ip == "::1":
+        return
+    with _remotos_lock:
+        if (ip, que) in _remotos_vistos:
+            return
+        _remotos_vistos.add((ip, que))
+    logging.info("LAN: %s desde %s", que, ip)
 
 
 def lan_ip() -> str | None:
@@ -79,10 +121,17 @@ def refresh_web_cache() -> bool:
     target = cache_dir()
     ok = 0
     for rel in WEB_FILES:
+        local = os.path.join(target, rel.replace("/", os.sep))
+        # Las librerias llevan la version en el nombre y no cambian nunca:
+        # no hace falta volver a bajar un mega en cada arranque.
+        versionado = rel.startswith("app/vendor/") or (rel.startswith("app/voice/") and rel != "app/voice/voices.json")
+        if versionado and os.path.exists(local):
+            ok += 1
+            continue
         try:
-            with urlopen(f"{WEB_ORIGIN}/{rel}", timeout=15) as resp:
+            with red.abrir(f"{WEB_ORIGIN}/{rel}", timeout=15) as resp:
                 data = resp.read()
-            with open(os.path.join(target, rel.replace("/", os.sep)), "wb") as f:
+            with open(local, "wb") as f:
                 f.write(data)
             ok += 1
         except Exception as exc:
@@ -92,50 +141,151 @@ def refresh_web_cache() -> bool:
     return os.path.exists(os.path.join(target, "app", "index.html"))
 
 
+# Lo setea tray_client: abre la ventana de Setup de ESTA instancia cuando
+# llega un segundo arranque (ver /__show-setup mas abajo).
+on_show_setup = None
+
+
+# Mapa armado en esta PC ("Build my map", ver map_builder.py): juego ->
+# carpeta. Lo actualiza la bandeja cuando hay un mapa que coincide con los
+# mods activos. Se sirve en /localmap/<juego>/... con los mismos nombres de
+# archivo que una variante de R2.
+local_map_dirs: dict = {}
+
+
 class _StaticHandler(http.server.SimpleHTTPRequestHandler):
-    """Sirve la web app y los datos (/data/*.json) pidiendolos primero al
-    sitio (asi el modo LAN corre siempre la version actual de la web sin
-    depender de cuando arranco el cliente) y cayendo a la copia en cache si
-    no hay internet."""
+    """Sirve la web empaquetada; sin ella, actualiza la cache desde el sitio."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=cache_dir(), **kwargs)
 
+    # Parametros que ya dicen como conectarse: si viene alguno, no se toca.
+    CONNECT_PARAMS = ("local", "demo", "code", "backend", "live", "convoy")
+
+    def do_OPTIONS(self):
+        # Preflight de Chrome para una pagina publica (trucksim-dash.com) que
+        # le pide algo a 127.0.0.1: sin Allow-Private-Network lo corta.
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Range")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_HEAD(self):
+        if self.path.startswith("/localmap/"):
+            self._serve_local_map(head=True)
+            return
+        super().do_HEAD()
+
+    def _serve_local_map(self, head: bool = False):
+        """Archivos del mapa armado, con rangos (pmtiles pide de a pedazos y
+        SimpleHTTPRequestHandler no sabe responder 206)."""
+        partes = self.path.split("?", 1)[0].split("/")[2:]  # ['ats', 'vector', 'local_ats.pmtiles']
+        base = local_map_dirs.get(partes[0]) if partes else None
+        rel = "/".join(partes[1:])
+        if not base or not rel or ".." in partes:
+            self.send_error(404)
+            return
+        ruta = os.path.normpath(os.path.join(base, *partes[1:]))
+        if not ruta.startswith(os.path.normpath(base) + os.sep) or not os.path.isfile(ruta):
+            self.send_error(404)
+            return
+        total = os.path.getsize(ruta)
+        inicio, fin = 0, total - 1
+        rango = self.headers.get("Range")
+        if rango and rango.startswith("bytes="):
+            try:
+                a, b = rango[6:].split(",")[0].split("-")
+                if a:
+                    inicio, fin = int(a), (int(b) if b else total - 1)
+                else:
+                    inicio, fin = max(0, total - int(b)), total - 1
+                fin = min(fin, total - 1)
+            except ValueError:
+                inicio, fin = 0, total - 1
+            if inicio > fin:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{total}")
+                self.end_headers()
+                return
+            self.send_response(206)
+            self.send_header("Content-Range", f"bytes {inicio}-{fin}/{total}")
+        else:
+            self.send_response(200)
+        tipo = "application/json" if ruta.endswith(".json") else "application/octet-stream"
+        self.send_header("Content-Type", tipo)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(fin - inicio + 1))
+        self.send_header("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.end_headers()
+        if head:
+            return
+        with open(ruta, "rb") as f:
+            f.seek(inicio)
+            falta = fin - inicio + 1
+            while falta > 0:
+                bloque = f.read(min(1 << 16, falta))
+                if not bloque:
+                    break
+                self.wfile.write(bloque)
+                falta -= len(bloque)
+
     def do_GET(self):
-        url = urlsplit(self.path)
-        if url.path.startswith("/map-assets/"):
+        anotar_remoto(self.client_address[0] if self.client_address else None, "pagina (27765)")
+        if self.path.startswith("/map-assets/"):
             self.serve_map_asset()
             return
-        if url.path in ("/", "/app", "/app/", "/app/index.html"):
+        if self.path.startswith("/localmap/"):
+            self._serve_local_map()
+            return
+        # Los archivos se referencian con ?v=... para cache-busting - el query
+        # se ignora. "/" y "/app" van al index.
+        path = self.path.split("?", 1)[0]
+        # Entrar por la IP pelada (http://192.168.x.x:27765) servia el tablero
+        # pero sin ?local=1, asi que no se autoconectaba y pedia codigo; y en
+        # "/" los assets relativos (app.js, app.css) ni siquiera resuelven.
+        # Se redirige a /app/?local=1. Idea y codigo original: Vladimir
+        # Kutkovoy (PR #1).
+        url = urlsplit(self.path)
+        base = "/dash/" if url.path.startswith("/dash") else "/app/"
+        if url.path in ("/", "/app", "/app/", "/app/index.html",
+                        "/dash", "/dash/", "/dash/index.html"):
             query = parse_qs(url.query, keep_blank_values=True)
-            needs_local = not any(key in query for key in ("local", "demo", "code", "backend"))
-            if url.path in ("/", "/app") or needs_local:
+            needs_local = not any(k in query for k in self.CONNECT_PARAMS)
+            if url.path in ("/", "/app", "/dash") or needs_local:
                 if needs_local:
                     query["local"] = ["1"]
-                location = "/app/"
-                if query:
-                    location += "?" + urlencode(query, doseq=True)
-                # The browser needs the /app/ base URL for relative CSS/JS paths.
+                location = base + ("?" + urlencode(query, doseq=True) if query else "")
                 self.send_response(302)
                 self.send_header("Location", location)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
-        if has_bundled_web():
-            # Serve the exact UI shipped with this executable, never the website.
-            if self.path.split("?", 1)[0] in ("/", "/app", "/app/"):
-                self.path = "/app/index.html"
-            super().do_GET()
+        # Un segundo arranque del .exe (issue #4) no abre otra instancia: le
+        # pide a esta que muestre su ventana de Setup y se va. Solo desde la
+        # misma maquina, no desde la red.
+        if path == "/__show-setup":
+            local = self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+            if local and on_show_setup:
+                try:
+                    on_show_setup()
+                except Exception:
+                    logging.exception("on_show_setup fallo")
+            self.send_response(204 if local else 403)
+            self.end_headers()
             return
-        # Los archivos se referencian con ?v=... para cache-busting - el query
-        # se ignora. "/" y "/app" van al index.
-        path = self.path.split("?", 1)[0]
         if path in ("/", "/app", "/app/"):
             path = "/app/index.html"
-        if path.startswith("/app/") or path.startswith("/data/"):
+        if path == "/dash" or path == "/dash/":
+            path = "/dash/index.html"
+        if path.startswith("/app/") or path.startswith("/dash/") or path.startswith("/data/"):
             rel = path.lstrip("/")
             local_path = os.path.join(cache_dir(), rel.replace("/", os.sep))
-            if _refresh_file(rel, local_path):
+            if has_bundled_web() and os.path.isfile(local_path):
+                pass  # La web empaquetada debe coincidir con esta version.
+            elif _refresh_file(rel, local_path):
                 pass  # cache actualizada
             elif not os.path.exists(local_path):
                 self.send_error(404, "Not cached and site unreachable")
@@ -188,7 +338,7 @@ def _refresh_file(rel: str, local_path: str) -> bool:
     if ".." in rel:
         return False
     try:
-        with urlopen(f"{WEB_ORIGIN}/{rel}", timeout=6) as resp:
+        with red.abrir(f"{WEB_ORIGIN}/{rel}", timeout=6) as resp:
             data = resp.read()
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
         with open(local_path, "wb") as f:
@@ -246,6 +396,7 @@ class LocalServer:
         self.ws_server = None
         self.web_ready = False
         self.error: str | None = None
+        self.port_in_use = False
 
     @property
     def url(self) -> str | None:
@@ -260,12 +411,27 @@ class LocalServer:
             self.http_server = http.server.ThreadingHTTPServer(("0.0.0.0", HTTP_PORT), _StaticHandler)
             threading.Thread(target=self.http_server.serve_forever, daemon=True).start()
             self.ws_server = await websockets.serve(self._handle_viewer, "0.0.0.0", WS_PORT)
-            logging.info("Servidor LAN escuchando en http://0.0.0.0:%d (ws %d)", HTTP_PORT, WS_PORT)
+            logging.info("Servidor LAN escuchando en http://0.0.0.0:%d (ws %d), direccion %s",
+                         HTTP_PORT, WS_PORT, self.url or "sin IP de LAN")
         except OSError as exc:
+            # El puerto ocupado es el caso comun (otra instancia, u otro
+            # programa): la ventana mostraba el OSError crudo de Python. Se
+            # marca aparte para que la UI diga algo legible (issue #4).
             self.error = str(exc)
+            self.port_in_use = getattr(exc, "errno", None) == errno.EADDRINUSE or "10048" in str(exc)
+            # Si el HTTP levanto y fallo el WS, no dejar medio servidor arriba:
+            # el modo LAN no sirve sin los dos y el puerto queda tomado.
+            if self.http_server is not None:
+                try:
+                    self.http_server.shutdown()
+                    self.http_server.server_close()
+                except Exception:
+                    logging.exception("No se pudo cerrar el HTTP a medio levantar")
+                self.http_server = None
             logging.warning("No se pudo levantar el servidor LAN: %s", exc)
 
     async def _handle_viewer(self, ws):
+        anotar_remoto((getattr(ws, "remote_address", None) or (None,))[0], "datos (27766)")
         self.viewers.add(ws)
         try:
             await ws.send(json.dumps({"type": "session_state", "client_connected": True, "client_status": None, "local": True}))
@@ -306,3 +472,21 @@ class LocalServer:
         ob = self._outboxes.pop(viewer, None)
         if ob is not None:
             ob.close()
+
+
+def qr_image(url: str, box_size: int = 3):
+    """QR de la URL de LAN, en modulos OSCUROS sobre fondo CLARO y con la zona
+    silenciosa de 4 modulos que pide la norma.
+
+    Antes se dibujaba al reves (claro sobre el gris oscuro del panel) porque
+    quedaba lindo con el tema de la ventana: la camara de Samsung (y la de
+    varios Android) no lee un QR invertido y la de otros telefonos si, asi que
+    parecia un QR "roto" al azar (issue #3). Un lector tiene que poder asumir
+    oscuro = 1.
+    """
+    import qrcode
+
+    qr = qrcode.QRCode(box_size=box_size, border=4)
+    qr.add_data(url)
+    qr.make(fit=True)
+    return qr.make_image(fill_color="black", back_color="white").convert("RGB")

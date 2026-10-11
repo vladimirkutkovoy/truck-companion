@@ -31,20 +31,23 @@
 <header><img src="/assets/logo.svg" alt="" /> <a href="/" style="color:var(--text)">Truck Dash</a></header>
 <main>
   <h1>Privacy policy</h1>
-  <p class="updated">Last updated: September 2026</p>
+  <p class="updated">Last updated: 7 October 2026</p>
 
-  <p>Truck Dash is a free, open-source companion for Euro Truck Simulator 2 and American Truck Simulator. It has no user accounts and is designed to handle as little data as possible. This page explains exactly what it reads, sends and stores.</p>
+  <p>Truck Dash is a free, open-source companion for Euro Truck Simulator 2 and American Truck Simulator. It is designed to handle as little data as possible. This page explains exactly what it reads, sends and stores.</p>
+  <p><strong>An account is optional.</strong> Without one, everything works as it always has and nothing about you is stored on our servers. If you do create one, the section below says exactly what it holds.</p>
 
   <h2>What the local client reads</h2>
   <ul>
     <li><strong>Game telemetry</strong> through SCS Software's official Telemetry SDK (a shared-memory segment the game exposes when the plugin is installed): position, speed, fuel, cargo, job, truck wear and similar in-game values.</li>
     <li><strong>Your in-game key bindings</strong> (<code>controls.sii</code> in the game's profile folder), read-only, so the button box presses the same keys you configured in the game.</li>
     <li><strong>Where the game is installed</strong> (via Steam's library list), only to offer installing the telemetry plugin for you.</li>
+    <li><strong>The game's log</strong> (<code>game.log.txt</code> in your Documents folder), read-only, to see which map mods are active so the dashboard loads the right map.</li>
+    <li><strong>Which map DLCs you have</strong>: the names of the <code>dlc_*.scs</code> files in the game folder (not their contents), so routes avoid the DLCs you don't own.</li>
   </ul>
-  <div class="box">The client never reads, modifies or uploads any other file on your computer. It does not need administrator rights. It writes only its own settings (<code>keybinds.json</code>) and a log file next to the executable.</div>
+  <div class="box">The client never reads, modifies or uploads any other file on your computer, and from the game folder it only looks at file names. It does not need administrator rights. It writes only its own settings (<code>keybinds.json</code>) and a log file next to the executable.</div>
 
   <h2>What is sent to the server</h2>
-  <p>The client sends live telemetry over an encrypted WebSocket to a small relay server (hosted on Railway), tagged only with a random 8-character pairing code. The server forwards it to the browser(s) connected with the same code. Telemetry is <strong>not stored</strong>; it exists in memory only while your session is open.</p>
+  <p>The client sends live telemetry over an encrypted WebSocket to a small relay server (hosted on Railway), tagged only with a random 8-character pairing code. The server forwards it to the browser(s) connected with the same code. Along with it go the client's status, the map mods and the map DLCs it found, so your dashboard can pick the map and avoid DLCs you don't own. Telemetry is <strong>not stored</strong>; it exists in memory only while your session is open. The one exception is your own driving history, and only if you link the client to an account (see below).</p>
   <p>No name, email, Steam ID, IP-based profile, hardware ID or any other identifier is collected. Your IP address is seen by the server like by any website you visit, and is used only for basic abuse rate-limiting in memory.</p>
 
   <h2>What is stored</h2>
@@ -56,23 +59,51 @@
 
   <h2>Optional features</h2>
   <ul>
-    <li><strong>Other drivers, live</strong>: off by default. If you turn it on, your in-game position is shared with other users who also opted in and are on the same game/map, identified only by a temporary session id. Turn it off at any time in Settings.</li>
-    <li><strong>Voice directions</strong> use your device's built-in speech engine; nothing is sent anywhere.</li>
+    <li><strong>Other drivers, live / public live map</strong>: on by default (you're told the first time you connect). While the app is open, your in-game position, heading, speed, truck model, cargo and job cities are shared with other users on the same game/map and shown on the public <a href="/live/">live map</a>, identified only by a temporary session id — plus the convoy nickname if you chose one. Nothing else (no name, IP, Steam or hardware id) is attached. Turn it off at any time in Settings → "Share my position"; sharing stops immediately and nothing is stored. While you share your position, the route your dashboard calculated is shown too, unless you untick "Also show my route on the live map".</li>
+    <li><strong>Maps we don't know yet</strong>: if your truck is outside the map Truck Dash loaded (you are probably playing a map mod we don't support), the dashboard sends the relay one report per map and session: the map variant, your in-game position rounded to whole metres, and the names of your active mods, as the game lists them. Nothing that identifies you is attached, and the relay only keeps totals (how many reports, the area, and how often each mod name appears) to decide which maps to add.</li>
   </ul>
 
+  <h2>Accounts (optional)</h2>
+  <p>An account lets you keep your trips and stats across devices and have a profile. You sign in with Discord or Google, where <strong>we never see your password</strong>, or with your email and a password of your own.</p>
+  <p>What an account stores:</p>
+  <ul>
+    <li>A random internal id, your chosen username, and when the account was created and last used.</li>
+    <li>The id the sign-in provider gives us (for example your Discord user id), so we recognise you next time. We request only the <code>identify</code> and <code>email</code> scopes.</li>
+    <li>Your avatar image URL from that provider, refreshed each time you sign in.</li>
+    <li><strong>If you sign up with email:</strong> your email address, when you confirmed it, and your password stored only as an Argon2id hash, so nobody, us included, can read it back. To confirm the address and to reset a forgotten password we email you a 6-digit code; only a keyed hash of the code is stored, it expires after 15 minutes, and we also note the IP address that asked for it, to limit how many codes can be sent. Codes are erased soon after they expire, or with your account.</li>
+    <li>The email address the provider reports, if it is verified. It is kept as a <strong>contact detail only</strong>: it is never a way to sign in, and it is never used to link two accounts together.</li>
+    <li>Whether your profile is public. <strong>It is private by default</strong> and turning it on is an explicit choice.</li>
+    <li>Your open sessions: a random token, when each started and expires, and the browser identification string, so you can recognise your devices and close the ones you do not want.</li>
+    <li><strong>Your driving, only if you link the Windows client to the account.</strong> Each time you drive: the game and map, when you started and stopped, the distance, the in-game and real time, top speed and fuel used. Each job: the cities, companies, cargo and its weight, the pay, the planned distance and the one the game reports on delivery, tolls, ferries and fines, how much the truck wore down, whether it was delivered or cancelled (and the penalty the game charged for cancelling), and the route you drove, simplified to a few hundred points. Positions are coordinates on the game's map, not your real location.</li>
+  </ul>
+  <p>Until you link the client, it records nothing at all, not even on your own computer. Unlinking it in the client's Setup window stops it. What was already recorded stays in the account until you delete the account, and it is part of the data download.</p>
+  <div class="box">Accounts are never linked by email address. Signing in with a second provider adds it to the account you are already signed into, and only if you ask for it.</div>
+  <p>The database runs on Railway and is backed up once a day. Backups are encrypted and kept for at most seven days.</p>
+
   <h2>Cookies and analytics</h2>
-  <p>Truck Dash sets no cookies and uses no analytics or advertising trackers. Map tiles and fonts are loaded from Cloudflare R2 and Google Fonts respectively, which see the usual request metadata (IP, user agent) as any CDN does.</p>
+  <p>Truck Dash uses <strong>no analytics, advertising or tracking cookies</strong>, and no analytics service of any kind.</p>
+  <p>If you sign in, one strictly necessary cookie is set (<code>td_session</code>). It holds a random value and nothing else: no name, no email, no id. It is <code>HttpOnly</code> and <code>Secure</code>, so scripts cannot read it and it only travels over HTTPS, it lasts 90 days, and it is scoped to <code>trucksim-dash.com</code>. Signing out deletes it and invalidates it on the server. Without an account, no cookie is set at all.</p>
+  <p>Map tiles and fonts are loaded from Cloudflare R2 and Google Fonts respectively, which see the usual request metadata (IP, user agent) as any CDN does.</p>
 
   <h2>Third parties</h2>
   <ul>
-    <li><a href="https://railway.app" target="_blank" rel="noopener">Railway</a> hosts the relay backend.</li>
+    <li><a href="https://railway.app" target="_blank" rel="noopener">Railway</a> hosts the relay backend and, for accounts, the database.</li>
+    <li><a href="https://discord.com/" target="_blank" rel="noopener">Discord</a> and <a href="https://google.com/" target="_blank" rel="noopener">Google</a> handle signing in, if you choose to sign in with them. Their own privacy policies apply to what happens on their side.</li>
     <li><a href="https://www.cloudflare.com/" target="_blank" rel="noopener">Cloudflare R2</a> hosts the map data.</li>
+    <li><a href="https://resend.com/" target="_blank" rel="noopener">Resend</a> sends the sign-in emails (the 6-digit codes), only if you use email to sign in. It receives your email address and the message.</li>
     <li><a href="https://pages.github.com/" target="_blank" rel="noopener">GitHub Pages</a> hosts this website and the client downloads.</li>
     <li>Delivered jobs are posted to the public Truck Dash Discord server through a webhook.</li>
   </ul>
 
   <h2>Your choices</h2>
-  <p>Close the client (tray icon → Quit) and your session and its data are gone. Clear your browser's site data to remove local preferences and history. To ask anything about this policy, write to <a href="mailto:nether.appdev@gmail.com">nether.appdev@gmail.com</a> or open an issue on <a href="https://github.com/Nethercap/truck-companion" target="_blank" rel="noopener">GitHub</a>.</p>
+  <p>Close the client (tray icon → Quit) and your session and its data are gone. Clear your browser's site data to remove local preferences and history.</p>
+  <p>If you have an account, everything about it is in your hands from the <a href="/account/">account page</a>, with no need to ask us:</p>
+  <ul>
+    <li><strong>Download your data</strong>: a JSON file with everything the account holds.</li>
+    <li><strong>Delete your account</strong>: it is removed immediately and every session on every device stops working. It cannot be undone. Encrypted backups made before the deletion still contain it until they rotate out, which takes at most seven days.</li>
+    <li><strong>Unlink a sign-in method</strong> or close individual sessions.</li>
+  </ul>
+  <p>See also the <a href="/terms.html">terms of use</a>, which cover the rules for using the service. To ask anything about this policy, write to <a href="mailto:nether.appdev@gmail.com">nether.appdev@gmail.com</a> or open an issue on <a href="https://github.com/Nethercap/truck-companion" target="_blank" rel="noopener">GitHub</a>.</p>
 
   <p style="margin-top:2.5rem;color:var(--muted);font-size:0.85rem">Truck Dash is an independent fan-made tool, not affiliated with SCS Software.</p>
 </main>

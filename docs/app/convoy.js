@@ -27,6 +27,12 @@ const convoy = {
   code: null, you: null, creatorId: null, members: [], spectators: 0, ended: false,
   routes: new Map(),          // id -> { rev, points: [[x,z],...] }
   pending: null,              // { kind: 'create'|'join', code, nickname } para (re)enviar al abrir el socket
+  // Esta pestana es la que entro al convoy (o hizo algo en el). El relay le
+  // manda convoy_state a todas las pestanas de la sesion (la PC y el
+  // celular), y cada una mandaba su ruta (vacia si no tenia), su variante y
+  // su "compartir ingresos": la ruta del lider aparecia y desaparecia para
+  // los demas (auditoria del 10-10). Las otras pestanas solo muestran.
+  active: false,
   spectator: false, spectatorWs: null, spectatorGame: null,
   follow: false, followWaypoint: null,
   showLeaderRoute: true,
@@ -68,8 +74,36 @@ function convoyOnSocketOpen() {
   // Tras (re)conectar el backend no recuerda nada de esta pestana: se vuelve
   // a entrar con el mismo codigo/apodo. Si eramos el creador y el convoy ya
   // no existe (redeploy), se recrea con el mismo codigo.
-  if (!convoy.pending) return;
+  convoy.stateSinceOpen = false;
+  clearTimeout(convoy.orphanTimer);
+  if (!convoy.pending) {
+    // Pestana que solo mostraba: si despues de un redeploy la que manejaba
+    // no vuelve (celular bloqueado, pestana cerrada), el relay no tiene el
+    // convoy y nadie lo recrea. Sin noticias del convoy en un rato, la lider
+    // vuelve a entrar con lo que sabia.
+    if (convoyInRoom()) convoy.orphanTimer = setTimeout(convoyRejoinIfOrphan, CONVOY_ORPHAN_MS);
+    return;
+  }
+  // Despues de un redeploy el convoy lo recrea el creador al reconectar: si
+  // un miembro llega antes, recibe not_found y quedaba colgado con el
+  // convoy viejo en pantalla (auditoria del 10-10). Se reintenta un rato.
+  convoy.rejoinUntil = convoyInRoom() && convoy.pending.kind !== 'create' ? Date.now() + CONVOY_REJOIN_MS : 0;
+  convoySendPending();
+}
+const CONVOY_REJOIN_MS = 90000;
+const CONVOY_ORPHAN_MS = 12000;
+function convoyRejoinIfOrphan() {
+  if (convoy.stateSinceOpen || convoy.active || !convoyInRoom() || !isLeaderTab) return;
+  const me = convoyMe();
+  if (!me) return;
+  convoy.active = true;
+  convoy.pending = { kind: me.creator ? 'create' : 'join', code: convoy.code, nickname: me.nickname, postSummary: false };
+  convoyOnSocketOpen();
+}
+const CONVOY_REJOIN_EVERY_MS = 5000;
+function convoySendPending() {
   const p = convoy.pending;
+  if (!p) return;
   convoySend({ type: p.kind === 'create' ? 'convoy_create' : 'convoy_join', code: p.code, nickname: p.nickname,
     mapVariant: convoyMyVariant(), shareIncome: convoyShareIncome, postSummary: !!p.postSummary });
 }
@@ -84,22 +118,26 @@ function convoyHandleMessage(data) {
   }
 }
 
-function convoyOnRouteChanged() { convoySendRoute(true); }
+function convoyOnRouteChanged() { if (convoy.active) convoySendRoute(true); }
 
 function convoyOnTelemetry(data) {
   if (!convoyInRoom()) return;
+  convoyUpdateFollow();
+  if (!convoy.active) return; // la pestana que entro es la que manda
   const v = resolveEffectiveGame(data.game);
   if (v !== convoy.lastVariantSent) {
     convoy.lastVariantSent = v;
     convoySend({ type: 'convoy_variant', mapVariant: v, shareIncome: convoyShareIncome });
   }
   convoySendRoute(false);
-  convoyUpdateFollow();
 }
 
 // ---------------------------------------------------------------- estado
 function convoyApplyState(st) {
   const wasIn = convoyInRoom();
+  convoy.stateSinceOpen = true;
+  convoy.rejoinUntil = 0; // ya hay respuesta: se terminaron los reintentos
+  clearTimeout(convoy.rejoinTimer);
   if (st.left || st.kicked || st.ended) {
     const kicked = !!st.kicked;
     convoyReset();
@@ -116,8 +154,24 @@ function convoyApplyState(st) {
   if (!convoy.spectator) {
     // entrar bien: recordar para reconexiones
     const me = convoyMe();
-    if (me) convoy.pending = { kind: me.creator ? 'create' : 'join', code: st.code, nickname: me.nickname, postSummary: !!st.postSummary };
-    if (!wasIn && me) { convoy.lastVariantSent = null; convoySendRoute(true); }
+    // Que pestana maneja lo decide el relay (driver). Relay viejo: no manda
+    // el campo y queda como antes (la que entro o toco algo).
+    if (me && st.driver === true && !convoy.active) {
+      convoy.active = true;
+      convoy.lastVariantSent = null;
+      convoySendRoute(true);
+    } else if (me && st.driver === false && convoy.active && !st.driverless) {
+      convoy.active = false; // otra pestana o el otro dispositivo lo tomo
+    }
+    // La que manejaba se cerro o se recargo: la lider de este navegador lo
+    // pide. Si lo piden dos dispositivos a la vez, el relay se queda con uno.
+    if (me && st.driverless && !convoy.active && isLeaderTab && !convoy.claimPending) {
+      convoy.claimPending = true;
+      setTimeout(() => { convoy.claimPending = false; }, 3000);
+      convoySend({ type: 'convoy_claim' });
+    }
+    if (me && convoy.active) convoy.pending = { kind: me.creator ? 'create' : 'join', code: st.code, nickname: me.nickname, postSummary: !!st.postSummary };
+    if (!wasIn && me && convoy.active) { convoy.lastVariantSent = null; convoySendRoute(true); }
   }
   for (const id of [...convoy.routes.keys()]) if (!convoy.members.some(m => m.id === id)) convoy.routes.delete(id);
   convoyRenderAll();
@@ -126,6 +180,8 @@ function convoyApplyState(st) {
 function convoyReset() {
   convoy.code = null; convoy.you = null; convoy.creatorId = null; convoy.members = []; convoy.spectators = 0;
   convoy.routes.clear(); convoy.pending = null; convoy.lastVariantSent = null; convoy.lastRouteSig = null;
+  convoy.active = false;
+  clearTimeout(convoy.orphanTimer);
   convoySetFollow(false);
 }
 
@@ -142,6 +198,11 @@ function convoyOnEvent(ev) {
 }
 
 function convoyOnError(err) {
+  if (err.reason === 'not_found' && convoy.pending && Date.now() < (convoy.rejoinUntil || 0)) {
+    clearTimeout(convoy.rejoinTimer);
+    convoy.rejoinTimer = setTimeout(convoySendPending, CONVOY_REJOIN_EVERY_MS);
+    return;
+  }
   const key = { bad_nickname: 'convoyErrNick', not_found: 'convoyErrNotFound', banned: 'convoyErrBanned', full: 'convoyErrFull', nickname_taken: 'convoyErrTaken', not_in_convoy: 'convoyErrNotIn' }[err.reason] || 'convoyErrGeneric';
   showToast(t(key), 'danger', 5000);
   if (convoy.pending && (err.reason === 'not_found' || err.reason === 'banned') && !convoyInRoom()) convoy.pending = null;
@@ -157,6 +218,18 @@ function convoyOnQuickMessage(msg) {
   }
   convoy.msgNotes.set(msg.id, { key: msg.key, until: Date.now() + 60000 });
   convoyRenderCards();
+}
+
+// Tocar algo del convoy en esta pestana (la otra se cerro, el celular quedo
+// bloqueado) la pasa a ser la que manda, con su ruta y su variante.
+function convoyTakeOver() {
+  if (convoy.active || !convoyInRoom()) return;
+  convoy.active = true;
+  const me = convoyMe();
+  if (me) convoy.pending = { kind: me.creator ? 'create' : 'join', code: convoy.code, nickname: me.nickname, postSummary: false };
+  convoy.lastVariantSent = null;
+  convoySend({ type: 'convoy_claim', force: true });
+  convoySendRoute(true);
 }
 
 // ---------------------------------------------------------------- ruta propia -> convoy
@@ -249,6 +322,9 @@ function convoyUpdateFollow() {
   const label = `📍 ${t('convoyLeaderTag')}: ${leader.cityDst || leader.nickname}`;
   addWaypoint([dest[0], dest[1]], toLngLat(dest[0], dest[1]), false, label);
   convoy.followWaypoint = waypoints[waypoints.length - 1] || null;
+  // No se guarda para despues de recargar (ver saveWaypoints): addWaypoint ya
+  // lo guardo, se marca y se vuelve a guardar sin el.
+  if (convoy.followWaypoint) { convoy.followWaypoint.convoyFollow = true; saveWaypoints(); }
 }
 
 // ---------------------------------------------------------------- mapa: marcadores + borde + ruta del lider
@@ -312,7 +388,8 @@ function convoyRenderMarkers() {
     }
     entry.path.setAttribute('fill', convoyColor(m));
     const bearing = map ? map.getBearing() : 0;
-    entry.arrow.style.transform = `rotate(${(m.heading || 0) - bearing}deg)`;
+    // El rumbo viene sobre la grilla del juego: a geografico, como el propio.
+    entry.arrow.style.transform = `rotate(${gridHeadingToGeo(m.heading || 0, m.x, m.z, toLngLat) - bearing}deg)`;
     const tag = myVariant && m.variant && m.variant !== myVariant ? ` <small>${escapeHtml(convoyVariantLabel(m.variant))}</small>` : '';
     entry.label.innerHTML = `${escapeHtml(m.nickname)}${tag}`;
     entry.el.classList.toggle('dim', !!(myVariant && m.variant && m.variant !== myVariant));
@@ -323,7 +400,12 @@ function convoyRenderMarkers() {
 }
 
 function convoyVariantLabel(v) {
-  return { ats_c2c: 'C2C', ats_promods: 'ProMods', ets2_promods: 'ProMods', ats: 'ATS', ets2: 'ETS2' }[v] || v;
+  return {
+    ats_c2c: 'C2C', ats_promods: 'ProMods', ats_c2c_promods: 'C2C+ProMods', ats_reforma: 'Reforma', ats_reforma_c2c_promods: 'Reforma+C2C+PM',
+    ats_canada: 'Canada', ats_c2c_canada: 'C2C+Canada', ets2_eugu: 'EU Grand Utopia', ets2_promods_eugu: 'ProMods+EUGU',
+    ets2_promods: 'ProMods', ets2_promods_rusmap: 'ProMods+RusMap', ets2_promods_roex: 'ProMods+Roex', ets2_promods_rusmap_roex: 'PM+RusMap+Roex', ets2_gu: 'Grand Utopia', ets2_tmp: 'TruckersMP',
+    ats: 'ATS', ets2: 'ETS2',
+  }[v] || v;
 }
 
 // Companeros fuera de pantalla: una chapita pegada al borde del mapa, del
@@ -472,6 +554,7 @@ function convoyRenderModal() {
 }
 
 function convoyOpenModal(prefillCode) {
+  convoyTakeOver(); // abrir el convoy aca = esta es la pestana que se esta usando
   convoyRenderModal();
   if (prefillCode) document.getElementById('convoyCodeInput').value = prefillCode;
   document.getElementById('convoyModal').style.display = 'flex';
@@ -485,7 +568,7 @@ function convoyWireUi() {
   $('convoyBtn').addEventListener('click', () => convoyOpenModal());
   $('convoyModalClose').addEventListener('click', () => { $('convoyModal').style.display = 'none'; });
   $('convoyNick').addEventListener('input', e => { convoyNick = e.target.value.trim().slice(0, 16); convoySaveSettings(); });
-  $('convoyShareIncome').addEventListener('change', e => { convoyShareIncome = e.target.checked; convoySaveSettings(); if (convoyInRoom()) convoySend({ type: 'convoy_variant', mapVariant: convoyMyVariant(), shareIncome: convoyShareIncome }); });
+  $('convoyShareIncome').addEventListener('change', e => { convoyShareIncome = e.target.checked; convoySaveSettings(); if (convoyInRoom()) convoyTakeOver(); if (convoyInRoom()) convoySend({ type: 'convoy_variant', mapVariant: convoyMyVariant(), shareIncome: convoyShareIncome }); });
   $('convoyMute').addEventListener('change', e => { convoyMuted = e.target.checked; convoySaveSettings(); });
   $('convoyShowMarkers').addEventListener('change', e => { convoyShowMarkers = e.target.checked; convoySaveSettings(); convoyRenderMarkers(); });
   $('convoyCodeInput').addEventListener('input', e => { e.target.value = e.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 6); });
@@ -495,6 +578,7 @@ function convoyWireUi() {
     const code = kind === 'join' ? $('convoyCodeInput').value.trim().toUpperCase() : null;
     if (kind === 'join' && code.length !== 6) { showToast(t('convoyErrNotFound'), 'danger'); return; }
     convoy.pending = { kind, code, nickname, postSummary: $('convoyPostSummary').checked };
+    convoy.active = true;
     convoyOnSocketOpen();
   };
   $('convoyCreateBtn').addEventListener('click', () => start('create'));
@@ -509,7 +593,15 @@ function convoyWireUi() {
   const pop = $('convoyMsgPop');
   pop.innerHTML = CONVOY_QUICK.map(q => `<button class="convoyQuickBtn" data-key="${q.key}"><span>${q.icon}</span><span data-i18n="convoyMsg_${q.key}">${t('convoyMsg_' + q.key)}</span></button>`).join('');
   pop.querySelectorAll('button[data-key]').forEach(b => b.addEventListener('click', () => { convoySend({ type: 'convoy_msg', key: b.dataset.key }); pop.style.display = 'none'; }));
-  $('convoyMsgBtn').addEventListener('click', () => { pop.style.display = pop.style.display === 'none' ? '' : 'none'; });
+  $('convoyMsgBtn').addEventListener('click', () => {
+    // El boton vive en la columna flex de la izquierda: su altura depende de
+    // cuantos botones esten visibles, asi que el popover se ancla a el.
+    const btn = $('convoyMsgBtn').getBoundingClientRect();
+    const panel = document.getElementById('mapPanel').getBoundingClientRect();
+    pop.style.top = `${Math.max(8, btn.top - panel.top)}px`;
+    pop.style.left = `${btn.right - panel.left + 8}px`;
+    pop.style.display = pop.style.display === 'none' ? '' : 'none';
+  });
   document.addEventListener('click', (e) => { if (!pop.contains(e.target) && e.target !== $('convoyMsgBtn') && !$('convoyMsgBtn').contains(e.target)) pop.style.display = 'none'; });
   pop.style.display = 'none';
   convoyRenderAll();
@@ -586,6 +678,10 @@ function convoyFitMembers() {
 document.addEventListener('DOMContentLoaded', () => {
   convoyWireUi();
   if (window.__convoySpectator) { const sp = window.__convoySpectator; window.__convoySpectator = null; convoyStartSpectator(sp.code, sp.backend); }
-  const hook = () => { if (map) { map.on('move', () => { convoyRenderEdgeIndicators(); }); map.on('rotate', () => convoyRenderMarkers()); } };
+  // Sin convoy no hay nada que dibujar: antes esto media el mapa
+  // (getBoundingClientRect, que fuerza un layout) en cada cuadro de
+  // movimiento aunque nadie estuviera en un convoy.
+  const hayConvoy = () => convoy.members.length || convoy.markers.size || convoy.edges.size;
+  const hook = () => { if (map) { map.on('move', () => { if (hayConvoy()) convoyRenderEdgeIndicators(); }); map.on('rotate', () => { if (hayConvoy()) convoyRenderMarkers(); }); } };
   const iv = setInterval(() => { if (map) { hook(); clearInterval(iv); } }, 500);
 });

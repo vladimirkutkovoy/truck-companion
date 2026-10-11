@@ -3,7 +3,9 @@
 <head>
 <meta charset="utf-8" />
 <meta name="robots" content="noindex, nofollow" />
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<!-- viewport-fit=cover: sin esto env(safe-area-inset-*) vale 0 y en pantalla
+     completa las indicaciones quedan abajo de la camara del telefono. -->
 <title>Truck Dash – Live Dashboard</title>
 <link rel="icon" type="image/svg+xml" href="assets/logo.svg" />
 <link rel="manifest" href="manifest.json" />
@@ -12,8 +14,9 @@
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
-<link rel="stylesheet" href="app.css?v=20260922n" />
+<link rel="stylesheet" href="vendor/maplibre-gl-4.7.1.css" />
+<link rel="stylesheet" href="../dash/dash.css?v=20261011b" />
+<link rel="stylesheet" href="app.css?v=20261011b" />
 </head>
 <body>
   <div id="toastContainer"></div>
@@ -43,10 +46,27 @@
       </select>
       <button class="iconBtn secondary" id="modsBtn" data-i18n-title="modsTitle" title="Map mods"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 7h4a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-4v-3a1.5 1.5 0 0 0-3 0v3H7a2 2 0 0 1-2-2v-4h3a1.5 1.5 0 0 0 0-3H5V9a2 2 0 0 1 2-2h4V4a1.5 1.5 0 0 1 3 0v3z"/></svg></button>
       <a class="iconBtn secondary discord" id="discordBtn" href="https://discord.gg/K7Xq4628tg" target="_blank" rel="noopener" data-i18n-title="joinDiscord" title="Join our Discord"><svg viewBox="0 0 127.14 96.36" width="18" height="18" fill="currentColor"><path d="M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C129.24,52.84,122.9,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,46,53.89,53,48.84,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.25,60,73.25,53s5-12.74,11.44-12.74S96.23,46,96.12,53,91.08,65.69,84.69,65.69Z"/></svg></a>
-      <button class="iconBtn secondary" id="convoyBtn" data-i18n-title="convoyTitle" title="Convoy (beta)" style="position:relative"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 14h9V8H2zM11 10h4l3 3v1h-7z"/><circle cx="5" cy="16.5" r="1.6"/><circle cx="15" cy="16.5" r="1.6"/><path d="M16 6h6v5h-6"/></svg><span id="convoyBadge" class="mapBtnBadge" style="display:none">0</span></button>
+      <button class="iconBtn secondary" id="convoyBtn" data-i18n-title="convoyTitle" title="Convoy (beta)" style="position:relative"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M1 10h7v5H1z"/><circle cx="3" cy="17" r="1.2"/><circle cx="6.4" cy="17" r="1.2"/><path d="M11 8h6l4 4v3H11z"/><circle cx="13.6" cy="17" r="1.3"/><circle cx="19" cy="17" r="1.3"/></svg><span id="convoyBadge" class="mapBtnBadge" style="display:none">0</span></button>
+      <button class="iconBtn" id="dashBtn" data-i18n-title="dashOpenPanel" title="Dashboard panel"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 18 0"/><path d="M3 12v4h18v-4"/><path d="M12 12l4-3"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/></svg></button>
       <button class="iconBtn" id="settingsBtn" data-i18n-title="settings" title="Settings"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
       <button class="iconBtn" id="helpBtn" data-i18n-title="replayTour" title="Show quick tour">?</button>
     </div>
+  </div>
+
+  <!-- Panel a pantalla completa: el mismo modulo que sirve docs/dash/ en un
+       segundo dispositivo. Aca esta para quien tiene uno solo y quiere
+       alternar sin recargar el mapa. -->
+  <div id="dashOverlay" class="dashOverlay" hidden>
+    <div class="dashOverlayBar">
+      <span class="dashOverlayTitle" data-i18n="dashTitle">Dashboard</span>
+      <div class="sizeGroup" id="dashSizeGroup" data-i18n-title="dashSize">
+        <button class="iconBtn secondary" data-dash-scale="0.85">S</button>
+        <button class="iconBtn secondary" data-dash-scale="1">M</button>
+        <button class="iconBtn secondary" data-dash-scale="1.2">L</button>
+      </div>
+      <button class="iconBtn" id="dashCloseBtn" data-i18n-title="dashOpenGps" title="GPS map">✕</button>
+    </div>
+    <div id="dashOverlayPanel"></div>
   </div>
 
   <div id="settingsModal" class="settingsOverlay" style="display:none;">
@@ -66,7 +86,9 @@
         <option value="ru">Русский</option>
         </select>
         <button id="setModsBtn" class="settingsLinkBtn" data-i18n="modsTitle">Map mods</button>
+        <button id="setDlcBtn" class="settingsLinkBtn" data-i18n="dlcTitle">DLCs</button>
         <a class="settingsLinkBtn" href="https://discord.gg/K7Xq4628tg" target="_blank" rel="noopener">Discord</a>
+        <a class="settingsLinkBtn" id="guideLink" href="https://trucksim-dash.com/guide/" target="_blank" rel="noopener" data-i18n="guideLink">User guide</a>
       </div>
 
       <p class="settingsSectionTitle" data-i18n="settingsMiniHudTitle">Show in mini-HUD (when info panel is hidden):</p>
@@ -76,10 +98,27 @@
       <label class="settingsRow"><input type="checkbox" id="setMiniDistance" /> <span data-i18n="distanceLeft">Distance left</span></label>
       <label class="settingsRow"><input type="checkbox" id="setMiniCruise" /> <span data-i18n="cruiseControl">Cruise control</span></label>
       <label class="settingsRow"><input type="checkbox" id="setMiniGps" /> <span data-i18n="settingsGpsDirections">GPS directions</span></label>
+      <label class="settingsRow"><input type="checkbox" id="setMiniRest" /> <span data-i18n="nextRest">Next rest stop</span></label>
 
       <p class="settingsSectionTitle" data-i18n="settingsLiveTitle">Other players nearby:</p>
       <label class="settingsRow"><input type="checkbox" id="setLiveShare" /> <span data-i18n="settingsLiveShare">Share my position and see others (same game/map only)</span></label>
+      <label class="settingsRow"><input type="checkbox" id="setLiveShareRoute" /> <span data-i18n="settingsLiveShareRoute">Also show my route on the live map</span></label>
+      <p id="liveShareLanHint" class="waypointModalExplain" data-i18n="liveShareLanHint" hidden>On the same Wi-Fi (LAN) this is set from the dashboard opened with the pairing code.</p>
       <label class="settingsRow"><input type="checkbox" id="setLiveHideOthers" /> <span data-i18n="settingsLiveHideOthers">Hide other players' markers on the map</span></label>
+
+      <p class="settingsSectionTitle" data-i18n="settingsButtonsTitle">Map buttons:</p>
+      <label class="settingsRow"><input type="checkbox" id="setDarkButtons" /> <span data-i18n="settingsDarkButtons">Dark buttons, to match the dark map</span></label>
+      <label class="settingsRow"><input type="checkbox" id="setFadeButtons" /> <span data-i18n="settingsFadeButtons">Fade them out while driving and bring them back on touch</span></label>
+      <button id="setMoveButtonsBtn" class="settingsLinkBtn" data-i18n="settingsMoveButtons">Move the buttons</button>
+
+      <p class="settingsSectionTitle" data-i18n="settingsBaseTitle">Base map:</p>
+      <label class="settingsRow"><input type="checkbox" id="setRealBase" /> <span data-i18n="settingsRealBase">Real base map: coastline, lakes, rivers and built-up areas under the roads</span></label>
+      <p class="settingsHint" data-i18n="settingsRealBaseHint">Map data from Natural Earth. Adds about 1 MB the first time. Grand Utopia has no real base map: it is a standalone map.</p>
+
+      <p class="settingsSectionTitle" data-i18n="settingsLiteTitle">Lite mode (old phones / tablets):</p>
+      <label class="settingsRow"><input type="checkbox" id="setLiteMode" /> <span data-i18n="settingsLiteMode">Lite mode: lower-resolution rendering, no animations or 3D, fewer labels, no road names in directions</span></label>
+      <label class="settingsRow"><input type="checkbox" id="setLiteNoRouting" /> <span data-i18n="settingsLiteNoRouting">Also skip routing (no route line, turn-by-turn or real ETA) — saves the most memory</span></label>
+      <p class="settingsHint" data-i18n="settingsLiteHint">Applies after a reload. Use it if the page crashes or the map never finishes loading on an older device.</p>
 
       <p class="settingsSectionTitle" data-i18n="settingsRouteTitle">Route preference:</p>
       <label class="settingsRow"><input type="radio" name="routeProfile" id="setRouteFastest" value="fastest" /> <span data-i18n="settingsRouteFastest">Fastest — prefers highways, like the in-game GPS</span></label>
@@ -96,15 +135,53 @@
         <button class="colorSwatch" data-color="#4caf50" style="background:#4caf50" data-i18n-title="colorGreen" title="Green"></button>
       </div>
 
+      <p class="settingsSectionTitle" data-i18n="settingsNavZoomTitle">Map zoom in navigation mode:</p>
+      <div class="navZoomRow">
+        <span data-i18n="navZoomFar">Farther</span>
+        <input type="range" id="setNavZoom" min="8" max="13" step="0.5" value="10" />
+        <span data-i18n="navZoomNear">Closer</span>
+        <button id="setNavZoomDefault" class="settingsLinkBtn" data-i18n="navZoomDefault">Default</button>
+      </div>
+      <p class="settingsHint" data-i18n="settingsNavZoomHint">You can still pinch to zoom while driving; the recenter button goes back to this zoom.</p>
+
+      <p class="settingsSectionTitle" data-i18n="settingsTruckSizeTitle">Truck marker size:</p>
+      <div class="navZoomRow">
+        <span data-i18n="truckSizeNormal">Normal</span>
+        <input type="range" id="setTruckSize" min="1" max="3" step="0.25" value="1" />
+        <span data-i18n="truckSizeHuge">3×</span>
+        <button id="setTruckSizeDefault" class="settingsLinkBtn" data-i18n="navZoomDefault">Default</button>
+      </div>
+
+      <p class="settingsSectionTitle" data-i18n="settingsVoiceTitle">Voice guidance:</p>
+      <label class="settingsRow"><input type="checkbox" id="setVoice" /> <span data-i18n="settingsVoice">Speak the directions (navigation mode)</span></label>
+      <p id="voiceOtherTabHint" class="settingsHint" data-i18n="voiceOtherTab" hidden>Truck Dash is open in another tab of this browser: the directions are spoken there. Open this tab to move them here.</p>
+      <div class="voiceRow">
+        <select id="setVoiceName" class="settingsLinkBtn settingsSelect"></select>
+        <button id="setVoiceTest" class="settingsLinkBtn" data-i18n="settingsVoiceTest">Test</button>
+      </div>
+      <label class="voiceRow" for="setVoiceTiming"><span data-i18n="settingsVoiceTiming">Say the turn:</span>
+        <select id="setVoiceTiming" class="settingsLinkBtn settingsSelect">
+          <option value="early" data-i18n="voiceTimingEarly">Well ahead</option>
+          <option value="normal" data-i18n="voiceTimingNormal">Shortly before</option>
+          <option value="late" data-i18n="voiceTimingLate">Right at the turn</option>
+        </select>
+      </label>
+      <p class="settingsHint" data-i18n="settingsVoiceHint">Announces each turn ahead of time and again at the turn, plus arrival, without road names. The in-game GPS can talk too: you may want to keep just one.</p>
+
       <p class="settingsSectionTitle" data-i18n="settingsCommandsTitle">Truck command buttons:</p>
       <button id="settingsRemapBtn" class="settingsLinkBtn" data-i18n="cmdRemap">Remap keys</button>
+
+      <p class="settingsSectionTitle" data-i18n="dashSecondDeviceTitle">Dashboard on another device:</p>
+      <p class="settingsHint" data-i18n="dashConnectHint"></p>
+      <button id="dashCopyLinkBtn" class="settingsLinkBtn" data-i18n="dashCopyLink">Copy the panel link</button>
 
       <p class="settingsSectionTitle" data-i18n="settingsHistoryTitle">Trip history (saved on this device only):</p>
       <div id="tripHistoryList" class="tripHistory"></div>
       <button id="tripHistoryClearBtn" class="settingsLinkBtn" data-i18n="tripHistoryClear">Clear history</button>
 
       <p class="settingsSectionTitle" data-i18n="settingsAboutTitle">About:</p>
-      <p class="settingsAbout"><a href="https://trucksim-dash.com/" target="_blank" rel="noopener">trucksim-dash.com</a> · <a href="https://github.com/Nethercap/truck-companion" target="_blank" rel="noopener">GitHub</a> · <a href="https://trucksim-dash.com/privacy.html" target="_blank" rel="noopener" data-i18n="privacyLink">Privacy</a> · <a href="https://github.com/Nethercap/truck-companion/releases" target="_blank" rel="noopener" data-i18n="changelogLink">Changelog</a></p>
+      <p class="settingsAbout"><a href="https://trucksim-dash.com/" target="_blank" rel="noopener">trucksim-dash.com</a> · <a href="https://github.com/Nethercap/truck-companion" target="_blank" rel="noopener">GitHub</a> · <a href="https://trucksim-dash.com/privacy.html" target="_blank" rel="noopener" data-i18n="privacyLink">Privacy</a> · <a href="https://trucksim-dash.com/terms.html" target="_blank" rel="noopener" data-i18n="termsLink">Terms</a> · <a href="https://github.com/Nethercap/truck-companion/releases" target="_blank" rel="noopener" data-i18n="changelogLink">Changelog</a> · <a href="https://tecito.app/truckdash" target="_blank" rel="noopener" data-i18n="supportLink">Support</a></p>
+      <a id="roadmapLink" class="settingsLinkBtn settingsLinkA" href="https://trucksim-dash.com/#roadmap" target="_blank" rel="noopener" data-i18n="roadmapLink">What's next</a>
       <button id="reportProblemBtn" class="settingsLinkBtn" data-i18n="reportProblem">Report a problem</button>
 
       <button id="settingsCloseBtn" data-i18n="close">Close</button>
@@ -142,6 +219,18 @@
     </div>
   </div>
 
+  <div id="dlcModal" class="settingsOverlay" style="display:none;">
+    <div class="settingsPanel">
+      <h3 data-i18n="dlcTitle">DLCs</h3>
+      <p class="settingsAbout" data-i18n="dlcHint">Uncheck the map DLCs you do not own and routes will avoid their roads. If there is no way around one, the route uses it anyway and tells you.</p>
+      <label class="settingsRow"><input type="radio" name="dlcAuto" id="setDlcAuto" value="auto" /> <span data-i18n="dlcAutoLabel">Automatic: read from the game (needs client 1.5.28 or newer)</span></label>
+      <p class="settingsAbout" id="dlcAutoStatus" style="margin:0 0 0.4rem 1.6rem"></p>
+      <label class="settingsRow"><input type="radio" name="dlcAuto" id="setDlcManual" value="manual" /> <span data-i18n="modsManualLabel">Choose manually</span></label>
+      <div id="dlcLists"></div>
+      <button id="dlcCloseBtn" data-i18n="close">Close</button>
+    </div>
+  </div>
+
   <div id="modsModal" class="settingsOverlay" style="display:none;">
     <div class="settingsPanel">
       <h3 data-i18n="modsTitle">Map mods</h3>
@@ -155,18 +244,32 @@
       <label class="settingsRow"><input type="radio" name="atsMod" id="setAtsModNone" value="none" /> <span data-i18n="settingsNoMod">None</span></label>
       <label class="settingsRow"><input type="radio" name="atsMod" id="setCoastToCoast" value="c2c" /> <span data-i18n="settingsCoastToCoast">I have Coast to Coast installed</span></label>
       <label class="settingsRow"><input type="radio" name="atsMod" id="setProModsCanada" value="promods_canada" /> <span data-i18n="settingsProModsCanada">I have ProMods Canada installed</span></label>
+      <label class="settingsRow"><input type="radio" name="atsMod" id="setC2CProModsCanada" value="c2c_promods_canada" /> <span data-i18n="settingsC2CProModsCanada">I have Coast to Coast + ProMods Canada installed</span></label>
+      <label class="settingsRow"><input type="radio" name="atsMod" id="setReforma" value="reforma" /> <span data-i18n="settingsReforma">I have Reforma (Mexico, with Sierra Nevada) installed</span></label>
+      <label class="settingsRow"><input type="radio" name="atsMod" id="setReformaAll" value="reforma_c2c_promods_canada" /> <span data-i18n="settingsReformaAll">I have Reforma + Coast to Coast + ProMods Canada installed</span></label>
+      <label class="settingsRow"><input type="radio" name="atsMod" id="setCanada" value="canada" /> <span data-i18n="settingsCanada">I have Western + Eastern Canada Expansion installed</span></label>
+      <label class="settingsRow"><input type="radio" name="atsMod" id="setC2CCanada" value="c2c_canada" /> <span data-i18n="settingsC2CCanada">I have Coast to Coast + Western/Eastern Canada Expansion (with their C2C connections)</span></label>
 
       <p class="settingsSectionTitle">Euro Truck Simulator 2</p>
       <label class="settingsRow"><input type="radio" name="ets2Mod" id="setEts2ModNone" value="none" /> <span data-i18n="settingsNoMod">None</span></label>
       <label class="settingsRow"><input type="radio" name="ets2Mod" id="setProMods" value="promods" /> <span data-i18n="settingsProMods">I have ProMods (Europe + all addons) installed</span></label>
+      <label class="settingsRow"><input type="radio" name="ets2Mod" id="setProModsRusMap" value="promods_rusmap" /> <span data-i18n="settingsProModsRusMap">I have ProMods + RusMap (with the ProMods-RusMap connector)</span></label>
+      <label class="settingsRow"><input type="radio" name="ets2Mod" id="setProModsRoex" value="promods_roex" /> <span data-i18n="settingsProModsRoex">I have ProMods + Roextended (Hybrid edition)</span></label>
+      <label class="settingsRow"><input type="radio" name="ets2Mod" id="setProModsRusMapRoex" value="promods_rusmap_roex" /> <span data-i18n="settingsProModsRusMapRoex">I have ProMods + RusMap + Roextended (Hybrid edition)</span></label>
+      <label class="settingsRow"><input type="radio" name="ets2Mod" id="setGrandUtopia" value="gu" /> <span data-i18n="settingsGrandUtopia">I play on Grand Utopia (standalone map)</span></label>
+      <label class="settingsRow"><input type="radio" name="ets2Mod" id="setEuGrandUtopia" value="eugu" /> <span data-i18n="settingsEuGrandUtopia">I have European Grand Utopia (Grand Utopia joined to Europe)</span></label>
+      <label class="settingsRow"><input type="radio" name="ets2Mod" id="setProModsEuGrandUtopia" value="promods_eugu" /> <span data-i18n="settingsProModsEuGrandUtopia">I have ProMods + European Grand Utopia (with its ProMods patch)</span></label>
+      <label class="settingsRow"><input type="radio" name="ets2Mod" id="setTruckersMP" value="tmp" /> <span data-i18n="settingsTruckersMP">I play on TruckersMP (base map + TruckersMP HQ and CD road)</span></label>
       </div>
 
+      <p class="settingsAbout modsCredits" id="modsCredits"></p>
       <button id="modsCloseBtn" data-i18n="close">Close</button>
     </div>
   </div>
 
   <div id="poiModal" class="settingsOverlay" style="display:none;">
     <div class="settingsPanel poiPanel">
+      <button id="poiCloseX" class="panelCloseX" type="button" data-i18n-title="close" title="Close" aria-label="Close">×</button>
       <h3 data-i18n="poiTitle">Find nearby</h3>
       <button id="poiNearestFuelBtn" class="settingsLinkBtn poiQuick" data-i18n="poiNearestFuel">⛽ Nearest fuel station</button>
       <div class="poiChips">
@@ -176,6 +279,7 @@
         <button class="poiChip" data-code="r">🏠 <span data-i18n="poiCatGarage">Garage</span></button>
         <button class="poiChip" data-code="d">🚛 <span data-i18n="poiCatDealer">Truck dealer</span></button>
         <button class="poiChip" data-code="w">⚖️ <span data-i18n="poiCatWeigh">Weigh station</span></button>
+        <button class="poiChip" data-code="a" hidden>🧭 <span data-i18n="poiCatAtlas">Atlas</span></button>
       </div>
       <input id="poiCityInput" class="poiSearch" type="search" list="poiCityList" data-i18n-placeholder="poiCityPlaceholder" placeholder="City (optional)…" autocomplete="off" />
       <datalist id="poiCityList"></datalist>
@@ -209,44 +313,61 @@
     <button id="updateBannerClose" aria-label="Dismiss">✕</button>
   </div>
 
+  <!-- Fuera del mapa a proposito: adentro tapaba justo lo que se quiere
+       mover. Solo aparece mientras se acomoda. -->
+  <div id="layoutBar" class="layoutBar" style="display:none">
+    <span data-i18n="layoutHint">Drag whatever you want to move; the handle moves a whole button group</span>
+    <label class="layoutBarGrid"><input type="checkbox" id="layoutGridChk" checked /> <span data-i18n="layoutGrid">Grid</span></label>
+    <button id="layoutResetBtn" class="settingsLinkBtn" data-i18n="layoutReset">Reset</button>
+    <button id="layoutDoneBtn" class="settingsLinkBtn" data-i18n="layoutDone">Done</button>
+  </div>
+
   <div class="layout" id="layout">
    <div class="rowWrap">
     <div id="mapPanel">
       <div id="mapCanvas"></div>
       <div id="convoyEdgeLayer" class="convoyEdgeLayer"></div>
       <div id="convoyMsgPop" class="convoyMsgPop" style="display:none"></div>
-      <div class="mapLeftControls">
+      <!-- Resumen de la ruta (PR #1 de Vladimir Kutkovoy): progreso, lo que
+           falta, tiempo restante y hora de llegada, con un boton para sacar
+           la ruta del mapa. -->
+      <div id="routeSummary" class="routeSummary" hidden>
+        <div class="routeProgressTrack"><div id="routeProgressBar" class="routeProgressBar"></div></div>
+        <div class="routeSummaryRow">
+          <span class="routeStat"><b id="routeRemaining">--</b> <span data-i18n="routeRemainingLabel">Left</span></span>
+          <span class="routeStat"><b id="routeDuration">--</b> <span data-i18n="routeDurationLabel">Time</span></span>
+          <span class="routeStat"><b id="routeArrival">--</b> <span data-i18n="routeArrivalLabel">Arrival</span></span>
+          <button id="routeResetBtn" class="routeResetBtn" data-i18n-title="routeReset" title="Clear the route from the map"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="2"/><path d="M8 19h4.5a3.5 3.5 0 0 0 0-7h-1a3.5 3.5 0 0 1 0-7H16"/><circle cx="18" cy="5" r="2"/><path d="M3 3l18 18"/></svg></button>
+          <button id="routeMinBtn" class="routeResetBtn" data-i18n-title="routeSummaryMin" title="Minimize the route summary"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></button>
+        </div>
+        <div id="routeStop" class="routeStop" hidden><span id="routeStopName"></span><button id="routeStopSkip" class="routeStopSkip" data-i18n="routeSkipStop">Skip</button></div>
+        <div id="routeApprox" class="routeApprox" hidden></div>
+        <!-- Minimizado queda solo la barra de progreso; tocarla lo abre. -->
+        <button id="routeExpandBtn" class="routeExpandBtn" data-i18n-title="routeSummaryShow" title="Show the route summary"></button>
+      </div>
+      <div id="bottomRightHud" class="bottomRightHud">
+        <div id="miniHudExtra" class="miniHudExtra"></div>
+      </div>
+      <div class="mapHint" id="mapHint" data-i18n="mapNotLoaded">Map not loaded</div>
+      <div class="mapNoWebgl" id="mapNoWebgl" hidden>
+        <b data-i18n="noWebglTitle">The map needs WebGL</b>
+        <p data-i18n="noWebglBody">This browser has WebGL turned off, so the map can't be drawn. Speed, trip, truck and the rest of the dashboard still work.</p>
+        <p class="muted" data-i18n="noWebglFix">To see the map, turn WebGL on (in LibreWolf: about:config, set webgl.disabled to false) or open the dashboard in Chrome, Edge or Firefox.</p>
+      </div>
+      <div id="mapLoading" class="mapLoading" style="display:none;"><span class="mapSpinner"></span><span id="mapLoadingText"></span></div>
+      <div id="reconnectBanner"></div>
+      <div class="mapLeftControls mapBtnGroup" id="mapLeftControls">
         <button id="recenterBtn" class="mapBtn" data-i18n-title="recenter" title="Recenter on truck"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M12 2 L14.7 6.8 L9.3 6.8 Z"/><path d="M12 22 L14.7 17.2 L9.3 17.2 Z"/><path d="M2 12 L6.8 9.3 L6.8 14.7 Z"/><path d="M22 12 L17.2 9.3 L17.2 14.7 Z"/><circle cx="12" cy="12" r="1.7"/></svg></button>
         <button id="fullscreenBtn" class="mapBtn" data-i18n-title="toggleFullscreen" title="Fullscreen">⛶</button>
         <button id="navToggleBtn" class="mapBtn" data-i18n-title="toggleNavMode" title="Navigation mode"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M8.7 2 L2.5 22 L6 22 L11 4.7 Z"/><path d="M15.3 2 L21.5 22 L18 22 L13 4.7 Z"/><rect x="10.9" y="3" width="1.7" height="3"/><rect x="11" y="8.2" width="1.7" height="3"/><rect x="11.1" y="13.4" width="1.7" height="3"/><rect x="11.2" y="18.6" width="1.7" height="2.5"/></svg></button>
         <button id="tilt3dBtn" class="mapBtn" data-i18n-title="toggle3d" title="3D view" style="display:none"><span class="btnText">3D</span></button>
         <button id="waypointBtn" class="mapBtn" data-i18n-title="toggleWaypointMode" title="Add waypoint"><span id="waypointCount" class="mapBtnBadge" style="display:none">0</span><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M6 2v20h2v-7h9l-1.5-3.5L17 8H8V2H6z"/></svg></button>
+        <button id="pipBtn" class="mapBtn" style="display:none" data-i18n-title="pipOverlay" title="Pop out a small window that stays on top of the game"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="15" rx="2"/><rect x="11.5" y="11" width="8" height="6" rx="1" fill="currentColor" stroke="none"/></svg></button>
         <button id="commandsToggleBtn" class="mapBtn" data-i18n-title="toggleCommands" title="Truck commands"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 12h4M9 10v4"/><circle cx="16" cy="10.5" r="1"/><circle cx="18" cy="12.5" r="1"/><circle cx="16" cy="14.5" r="1"/></svg></button>
-        <button id="convoyMsgBtn" class="mapBtn" style="display:none" data-i18n-title="convoyMsgBtn" title="Quick message to the convoy">💬</button>
+        <button id="convoyMsgBtn" class="mapBtn" style="display:none" data-i18n-title="convoyMsgBtn" title="Quick message to the convoy"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5h16v10H10l-4.5 3.2V16.5H4z"/><path d="M8 10h8M8 13h5"/></svg></button>
       </div>
-        <div class="mapNavigationControls">
-          <button id="resumeFollowBtn" type="button" class="mapBtn" data-i18n-title="recenter" title="Recenter on truck"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M12 2 L14.7 6.8 L9.3 6.8 Z"/><path d="M12 22 L14.7 17.2 L9.3 17.2 Z"/><path d="M2 12 L6.8 9.3 L6.8 14.7 Z"/><path d="M22 12 L17.2 9.3 L17.2 14.7 Z"/><circle cx="12" cy="12" r="1.7"/></svg></button>
-          <button id="zoomInBtn" type="button" class="mapBtn" data-i18n-title="zoomIn" title="Zoom in">+</button>
-          <button id="zoomOutBtn" type="button" class="mapBtn" data-i18n-title="zoomOut" title="Zoom out">−</button>
-        </div>
-      <div id="bottomRightHud" class="bottomRightHud">
-        <div id="miniHudExtra" class="miniHudExtra"></div>
-
-      </div>
-      <div class="mapHint" id="mapHint" data-i18n="mapNotLoaded">Map not loaded</div>
-      <div id="mapLoading" class="mapLoading" style="display:none;"><span class="mapSpinner"></span><span id="mapLoadingText"></span></div>
-      <div id="reconnectBanner"></div>
 
       <div id="navPanel" class="navPanel" style="display:none;"></div>
-      <div id="routeSummary" class="routeSummary" hidden>
-        <div class="routeSummaryDetails">
-          <span id="routeRemaining">--</span>
-          <span id="routeArrival" data-i18n-title="routeArrival" title="Arrival (local time)">--:--</span>
-          <span id="routeDuration" data-i18n-title="routeDuration" title="Remaining real time">--</span>
-          <button id="resetRouteBtn" type="button" data-i18n-title="resetRoute" title="Clear dashboard route">&#215;</button>
-        </div>
-        <progress id="routeProgress" max="100" value="0" data-i18n-title="routeProgress" title="Route progress"></progress>
-      </div>
 
       <div id="emptyState" class="emptyState" style="display:none;">
         <div class="emptyStateCard">
@@ -274,12 +395,14 @@
             </div>
           </div>
         </div>
+<div class="mapBtnGroup" id="topRightBtns">
         <button id="panelToggleBtn" class="mapBtn" data-i18n-title="togglePanel" title="Show/hide info">☰</button>
         <button id="poiBtn" class="mapBtn" data-i18n-title="poiTitle" title="Find nearby"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></button>
       </div>
+        </div>
     </div>
 
-    <div id="infoPanel">
+    <div id="infoPanel" class="noData">
      <div class="swipeHint" id="swipeHint">›</div>
      <div class="panelTabs" id="panelTabs">
        <button class="panelTab active" data-view="data" data-i18n="tabData">Data</button>
@@ -308,6 +431,12 @@
         </div>
       </div>
 
+      <div id="panelEmpty">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 14h9V8H2zM11 10h4l3 3v1h-7z"/><circle cx="5" cy="16.5" r="1.6"/><circle cx="15" cy="16.5" r="1.6"/></svg>
+        <span class="emptyTitle" data-i18n="panelEmptyTitle">Waiting for the game</span>
+        <span data-i18n="panelEmptyBody">Trip, truck and session data show up here as soon as the game starts sending telemetry.</span>
+      </div>
+
       <div class="card">
         <div class="cardTitle" data-i18n="cardTrip">Trip</div>
         <div class="route">
@@ -320,6 +449,7 @@
           <div class="row"><span class="label" data-i18n="etaGame">In-game ETA</span><span id="etaGame">-</span></div>
           <div class="row waypointSubRow" id="etaGameWaypointRow" hidden><span class="label" data-i18n="withWaypoint" data-i18n-title="withWaypointHint" title="Estimated by the app via your waypoint - the game does not know about it">📍 via waypoint</span><span id="etaGameWaypoint">-</span></div>
           <div class="row" id="nextCityRow" hidden><span class="label" data-i18n="nextCity">Next city</span><span id="nextCity">-</span></div>
+          <div class="row" id="gameClockRow" hidden><span class="label" data-i18n="gameClock">Game time</span><span id="gameClock">-</span></div>
           <div class="row" id="jobDeadlineRow" hidden><span class="label" data-i18n="jobDeadline">Job deadline</span><span id="jobDeadline">-</span></div>
           <div class="row"><span class="label" data-i18n="etaReal">Real ETA</span><span id="etaReal">-</span></div>
           <div class="row waypointSubRow" id="etaRealWaypointRow" hidden><span class="label" data-i18n="withWaypoint" data-i18n-title="withWaypointHint" title="Estimated by the app via your waypoint - the game does not know about it">📍 via waypoint</span><span id="etaRealWaypoint">-</span></div>
@@ -332,6 +462,13 @@
         </div>
       </div>
 
+      <div class="card liveMapCard" id="liveMapCard" hidden>
+        <div class="cardTitle cardTitleRow"><span data-i18n="liveMapTitle">Live map</span><span id="liveMapCount" class="convoyStatus"></span></div>
+        <div class="convoyMeta liveMapHead"><span id="liveMapVariant"></span><button id="liveMapFitBtn" class="waypointClearBtn" data-i18n="liveMapFitAll">Show all</button></div>
+        <div id="liveMapList"></div>
+        <div class="convoyActions"><a class="settingsLinkBtn" href="/live/" data-i18n="liveMapAll">All maps</a></div>
+      </div>
+
       <div class="card convoyCards" id="convoyCards" hidden>
         <div class="cardTitle cardTitleRow"><span><span data-i18n="convoyCardsTitle">Convoy</span> <span class="betaTag">beta</span></span><span id="convoyDots" class="convoyDots"></span></div>
         <div class="convoyCardsScroll" id="convoyCardsScroll"></div>
@@ -340,6 +477,7 @@
       <div class="card">
         <div class="cardTitle" data-i18n="cardTruck">Truck</div>
         <div class="row"><span class="label" data-i18n="truck">Truck</span><span id="truck">-</span></div>
+        <div class="row" id="odometerRow" hidden><span class="label" data-i18n="odometer">Odometer</span><span id="odometer">-</span></div>
         <div class="statLine" id="wearLine">-</div>
         <div class="row" id="mechanicalAlertsRow" style="display:none"><span class="label" data-i18n="alerts">Alerts</span><span id="mechanicalAlerts" style="color:var(--danger)">-</span></div>
       </div>
@@ -407,7 +545,7 @@
           <span data-i18n="cmdHazards">Hazards</span>
         </button>
         <button class="cmdBtn" id="cmdBeacon" data-action="toggle_beacon" data-i18n-title="cmdBeacon" title="Beacon light">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21h6"/><path d="M8 17h8l-1-6a3 3 0 0 0-6 0Z"/><circle cx="12" cy="6" r="2"/><path d="M12 2v1M8.5 3.5l.6.9M15.5 3.5l-.6.9"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 20h12"/><path d="M8 16h8l-1.2-4.5a2.9 2.9 0 0 0-5.6 0z"/><path d="M12 3v3M4.5 6.5l2 1.8M19.5 6.5l-2 1.8M2.5 13h2.5M19 13h2.5"/></svg>
           <span data-i18n="cmdBeacon">Beacon</span>
         </button>
         <button class="cmdBtn" id="cmdHandbrake" data-action="toggle_parking_brake" data-i18n-title="cmdHandbrake" title="Parking brake">
@@ -419,7 +557,7 @@
           <span data-i18n="cmdEngine">Engine</span>
         </button>
         <button class="cmdBtn" id="cmdTrailer" data-action="toggle_trailer" data-i18n-title="cmdTrailer" title="Trailer attach/detach">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="8" width="12" height="8" rx="1"/><circle cx="12" cy="18" r="1.5"/><circle cx="18" cy="18" r="1.5"/><path d="M9 11H5a2 2 0 0 0-2 2v1"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13v10H8z"/><path d="M8 13H4.2"/><circle cx="2.6" cy="13" r="1.2"/><circle cx="12.5" cy="18" r="1.5"/><circle cx="17.5" cy="18" r="1.5"/></svg>
           <span data-i18n="cmdTrailer">Trailer</span>
         </button>
         <button class="cmdBtn" id="cmdCamera" data-action="cycle_camera" data-i18n-title="cmdCamera" title="Switch camera">
@@ -431,11 +569,11 @@
           <span data-i18n="cmdCruise">Cruise</span>
         </button>
         <button class="cmdBtn" id="cmdLights" data-action="cycle_lights" data-i18n-title="cmdLights" title="Cycle lights">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 8a5 5 0 0 1 5-5h1a5 5 0 0 1 5 5v3l-11 4Z"/><path d="M15 9l6-2M15 12l6 1M15 6l5-4"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h3.5a7 7 0 0 1 0 14H3z"/><path d="M13 7l7 2M13 12l7 2M13 16.5l7 2"/></svg>
           <span data-i18n="cmdLights">Lights</span>
         </button>
         <button class="cmdBtn" id="cmdHighBeam" data-action="toggle_high_beam" data-i18n-title="cmdHighBeam" title="High beams">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 6a6 6 0 0 1 0 12H9a6 6 0 0 1 0-12z"/><path d="M3 8h4M3 12h4M3 16h4"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h3.5a7 7 0 0 1 0 14H3z"/><path d="M13 8h7M13 12h7M13 16h7"/></svg>
           <span data-i18n="cmdHighBeam">High beams</span>
         </button>
         <button class="cmdBtn" id="cmdInfotainment" data-action="toggle_infotainment" data-i18n-title="cmdInfotainment" title="Infotainment screen">
@@ -447,9 +585,25 @@
           <span data-i18n="cmdLiftAxle">Lift axle</span>
         </button>
         <button class="cmdBtn" id="cmdWipers" data-action="toggle_wipers" data-i18n-title="cmdWipers" title="Wipers">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 18a9 9 0 0 1 18 0"/><path d="M7 18c0-4 2-7 3-9M17 18c0-5-3-8-5-10"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 18c1.5-6.5 4-9.5 8.5-9.5s7 3 8.5 9.5z"/><path d="M7 18l7.2-6.2"/><path d="M12.6 10.3l2.7 1.7"/></svg>
           <span data-i18n="cmdWipers">Wipers</span>
         </button>
+        <!-- botones custom del usuario (hasta 3) + boton de agregar: los arma renderCustomButtons() -->
+      </div>
+    </div>
+  </div>
+
+  <div id="customBtnModal" class="settingsOverlay" style="display:none;">
+    <div class="settingsPanel">
+      <h3 data-i18n="customBtnModalTitle">Custom button</h3>
+      <p class="waypointModalExplain" data-i18n="customBtnExplain">The client presses this key in the game, exactly like the built-in buttons. Bind the same key to something in the game's controls.</p>
+      <div class="keybindRow"><span data-i18n="customBtnLabel">Label</span><input type="text" id="customBtnTitle" maxlength="14" style="width:140px" /></div>
+      <div class="keybindRow" style="margin-top:0.5rem"><span data-i18n="customBtnKey">Key</span><input type="text" id="customBtnKey" maxlength="24" style="width:140px" data-i18n-placeholder="customBtnKeyPlaceholder" placeholder="Press a key…" /></div>
+      <p class="waypointModalExplain" data-i18n="customBtnKeyHint">Click the field and press the key (Ctrl / Shift / Alt combos work). Letters, digits, F1–F24, numpad and the usual punctuation.</p>
+      <div class="waypointModalButtons">
+        <button id="customBtnSave" data-i18n="save">Save</button>
+        <button id="customBtnDelete" class="secondary" data-i18n="customBtnDelete">Delete</button>
+        <button id="customBtnCancel" class="secondary" data-i18n="close">Close</button>
       </div>
     </div>
   </div>
@@ -476,12 +630,16 @@
     </div>
   </div>
 
-<script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/pmtiles@3.2.0/dist/pmtiles.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/proj4@2.15.0/dist/proj4.js"></script>
-<script src="pure.js?v=20260922e"></script>
-<script src="i18n.js?v=20260922l"></script>
-<script src="app.js?v=20260922o"></script>
-<script src="convoy.js?v=20260922e"></script>
+<script src="vendor/maplibre-gl-4.7.1.js"></script>
+<script src="vendor/pmtiles-3.2.0.js"></script>
+<script src="vendor/proj4-2.15.0.js"></script>
+<script src="variants.js?v=20261011b"></script>
+<script src="pure.js?v=20261011b"></script>
+<script src="i18n.js?v=20261011b"></script>
+<script src="i18n_en_es.js?v=20261011b"></script>
+<script src="../dash/dash.js?v=20261011b"></script>
+<script src="app.js?v=20261011b"></script>
+<script src="convoy.js?v=20261011b"></script>
+<script src="livemap.js?v=20261011b"></script>
 </body>
 </html>
