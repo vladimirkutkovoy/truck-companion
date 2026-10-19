@@ -1,11 +1,11 @@
 {
-  "checkedAt": "2026-10-12T19:02:28Z",
+  "checkedAt": "2026-10-19T16:27:51Z",
   "mods": {
     "c2c": {
       "ours": "2.24.61.0",
-      "upstream": "2.24.61.1",
-      "status": "outdated",
-      "error": null,
+      "upstream": null,
+      "status": "unknown",
+      "error": "HTTPError: HTTP Error 429: Too Many Requests",
       "source": "https://forum.scssoft.com/viewtopic.php?t=202317"
     },
     "promods_canada": {
@@ -47,7 +47,7 @@
       "ours": "2.61",
       "upstream": null,
       "status": "unknown",
-      "error": "TimeoutError: The read operation timed out",
+      "error": "HTTPError: HTTP Error 429: Too Many Requests",
       "source": "https://forum.scssoft.com/viewtopic.php?t=332124"
     },
     "reforma": {
@@ -146,529 +146,444 @@
     "ats": {
       "files": {
         "vector/ats.pmtiles": {
-          "ok": true,
-          "bytes": 46174424,
-          "lastModified": "Thu, 24 Sep 2026 17:50:58 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats/route-graph-ats-v3.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:31 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats/route-graph-ats.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:30 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats/Cities.json": {
-          "ok": true,
-          "bytes": 24771,
-          "lastModified": "Thu, 24 Sep 2026 17:50:41 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats/road-names.json": {
-          "ok": true,
-          "bytes": 951461,
-          "lastModified": "Thu, 24 Sep 2026 17:50:22 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         }
       },
-      "totalBytes": 47150656,
-      "allOk": true
+      "totalBytes": 0,
+      "allOk": false
     },
     "ats_c2c": {
       "files": {
         "vector/ats_c2c.pmtiles": {
-          "ok": true,
-          "bytes": 57351350,
-          "lastModified": "Tue, 06 Oct 2026 01:11:27 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_c2c/route-graph-ats_c2c-v3.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:36 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_c2c/route-graph-ats_c2c.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:54 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_c2c/Cities.json": {
-          "ok": true,
-          "bytes": 34947,
-          "lastModified": "Tue, 06 Oct 2026 01:11:04 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_c2c/road-names.json": {
-          "ok": true,
-          "bytes": 1003832,
-          "lastModified": "Tue, 06 Oct 2026 01:11:13 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         }
       },
-      "totalBytes": 58390129,
-      "allOk": true
+      "totalBytes": 0,
+      "allOk": false
     },
     "ats_promods": {
       "files": {
         "vector/ats_promods.pmtiles": {
-          "ok": true,
-          "bytes": 48567629,
-          "lastModified": "Thu, 24 Sep 2026 17:58:22 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_promods/route-graph-ats_promods-v3.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:32 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_promods/route-graph-ats_promods.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:32 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_promods/Cities.json": {
-          "ok": true,
-          "bytes": 27433,
-          "lastModified": "Thu, 24 Sep 2026 17:58:12 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_promods/road-names.json": {
-          "ok": true,
-          "bytes": 951693,
-          "lastModified": "Thu, 24 Sep 2026 17:58:26 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         }
       },
-      "totalBytes": 49546755,
-      "allOk": true
+      "totalBytes": 0,
+      "allOk": false
     },
     "ats_c2c_promods": {
       "files": {
         "vector/ats_c2c_promods.pmtiles": {
-          "ok": true,
-          "bytes": 59749756,
-          "lastModified": "Tue, 06 Oct 2026 01:24:07 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_c2c_promods/route-graph-ats_c2c_promods-v3.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:30 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_c2c_promods/route-graph-ats_c2c_promods.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:29 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_c2c_promods/Cities.json": {
-          "ok": true,
-          "bytes": 37609,
-          "lastModified": "Tue, 06 Oct 2026 01:23:20 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_c2c_promods/road-names.json": {
-          "ok": true,
-          "bytes": 1004064,
-          "lastModified": "Tue, 06 Oct 2026 01:23:44 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         }
       },
-      "totalBytes": 60791429,
-      "allOk": true
+      "totalBytes": 0,
+      "allOk": false
     },
     "ats_canada": {
       "files": {
         "vector/ats_canada.pmtiles": {
-          "ok": true,
-          "bytes": 58301232,
-          "lastModified": "Thu, 08 Oct 2026 19:44:46 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_canada/route-graph-ats_canada-v3.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:33 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_canada/route-graph-ats_canada.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:31 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_canada/Cities.json": {
-          "ok": true,
-          "bytes": 48578,
-          "lastModified": "Thu, 08 Oct 2026 19:44:39 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_canada/road-names.json": {
-          "ok": true,
-          "bytes": 951461,
-          "lastModified": "Thu, 08 Oct 2026 19:44:38 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         }
       },
-      "totalBytes": 59301271,
-      "allOk": true
+      "totalBytes": 0,
+      "allOk": false
     },
     "ats_c2c_canada": {
       "files": {
         "vector/ats_c2c_canada.pmtiles": {
-          "ok": true,
-          "bytes": 69627213,
-          "lastModified": "Thu, 08 Oct 2026 19:52:17 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_c2c_canada/route-graph-ats_c2c_canada-v3.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:36 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_c2c_canada/route-graph-ats_c2c_canada.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:30 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_c2c_canada/Cities.json": {
-          "ok": true,
-          "bytes": 58681,
-          "lastModified": "Thu, 08 Oct 2026 19:51:55 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_c2c_canada/road-names.json": {
-          "ok": true,
-          "bytes": 1003832,
-          "lastModified": "Thu, 08 Oct 2026 19:51:48 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         }
       },
-      "totalBytes": 70689726,
-      "allOk": true
+      "totalBytes": 0,
+      "allOk": false
     },
     "ats_reforma": {
       "files": {
         "vector/ats_reforma.pmtiles": {
-          "ok": true,
-          "bytes": 61153075,
-          "lastModified": "Thu, 08 Oct 2026 19:33:59 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_reforma/route-graph-ats_reforma-v3.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:37 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_reforma/route-graph-ats_reforma.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:30 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_reforma/Cities.json": {
-          "ok": true,
-          "bytes": 39946,
-          "lastModified": "Thu, 08 Oct 2026 19:33:51 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_reforma/road-names.json": {
-          "ok": true,
-          "bytes": 951658,
-          "lastModified": "Thu, 08 Oct 2026 19:33:36 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         }
       },
-      "totalBytes": 62144679,
-      "allOk": true
+      "totalBytes": 0,
+      "allOk": false
     },
     "ats_reforma_c2c_promods": {
       "files": {
         "vector/ats_reforma_c2c_promods.pmtiles": {
-          "ok": true,
-          "bytes": 73309424,
-          "lastModified": "Tue, 06 Oct 2026 01:24:45 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_reforma_c2c_promods/route-graph-ats_reforma_c2c_promods-v3.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:38:14 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_reforma_c2c_promods/route-graph-ats_reforma_c2c_promods.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:52 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_reforma_c2c_promods/Cities.json": {
-          "ok": true,
-          "bytes": 52090,
-          "lastModified": "Tue, 06 Oct 2026 01:24:41 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ats_reforma_c2c_promods/road-names.json": {
-          "ok": true,
-          "bytes": 1003575,
-          "lastModified": "Tue, 06 Oct 2026 01:24:21 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         }
       },
-      "totalBytes": 74365089,
-      "allOk": true
+      "totalBytes": 0,
+      "allOk": false
     },
     "ets2": {
       "files": {
         "vector/ets2.pmtiles": {
-          "ok": true,
-          "bytes": 59434218,
-          "lastModified": "Mon, 21 Sep 2026 14:41:44 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2/route-graph-ets2-v3.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:51 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2/route-graph-ets2.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:32 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2/Cities.json": {
-          "ok": true,
-          "bytes": 30901,
-          "lastModified": "Thu, 24 Sep 2026 12:06:47 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2/road-names.json": {
-          "ok": true,
-          "bytes": 3215409,
-          "lastModified": "Thu, 24 Sep 2026 12:06:06 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         }
       },
-      "totalBytes": 62680528,
-      "allOk": true
+      "totalBytes": 0,
+      "allOk": false
     },
     "ets2_promods": {
       "files": {
         "vector/ets2_promods.pmtiles": {
-          "ok": true,
-          "bytes": 83565736,
-          "lastModified": "Mon, 21 Sep 2026 16:54:55 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_promods/route-graph-ets2_promods-v3.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:38:13 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_promods/route-graph-ets2_promods.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:57 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_promods/Cities.json": {
-          "ok": true,
-          "bytes": 69608,
-          "lastModified": "Thu, 24 Sep 2026 12:06:50 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_promods/road-names.json": {
-          "ok": true,
-          "bytes": 5060806,
-          "lastModified": "Thu, 24 Sep 2026 12:06:56 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         }
       },
-      "totalBytes": 88696150,
-      "allOk": true
+      "totalBytes": 0,
+      "allOk": false
     },
     "ets2_promods_rusmap": {
       "files": {
         "vector/ets2_promods_rusmap.pmtiles": {
-          "ok": true,
-          "bytes": 92184960,
-          "lastModified": "Mon, 21 Sep 2026 16:54:53 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_promods_rusmap/route-graph-ets2_promods_rusmap-v3.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:33 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_promods_rusmap/route-graph-ets2_promods_rusmap.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:51 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_promods_rusmap/Cities.json": {
-          "ok": true,
-          "bytes": 78703,
-          "lastModified": "Thu, 24 Sep 2026 12:06:58 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_promods_rusmap/road-names.json": {
-          "ok": true,
-          "bytes": 5116919,
-          "lastModified": "Thu, 24 Sep 2026 12:06:58 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         }
       },
-      "totalBytes": 97380582,
-      "allOk": true
+      "totalBytes": 0,
+      "allOk": false
     },
     "ets2_promods_roex": {
       "files": {
         "vector/ets2_promods_roex.pmtiles": {
-          "ok": true,
-          "bytes": 84767433,
-          "lastModified": "Mon, 21 Sep 2026 16:54:59 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_promods_roex/route-graph-ets2_promods_roex-v3.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:32 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_promods_roex/route-graph-ets2_promods_roex.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:37 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_promods_roex/Cities.json": {
-          "ok": true,
-          "bytes": 70088,
-          "lastModified": "Thu, 24 Sep 2026 12:07:00 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_promods_roex/road-names.json": {
-          "ok": true,
-          "bytes": 5108907,
-          "lastModified": "Thu, 24 Sep 2026 12:07:00 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         }
       },
-      "totalBytes": 89946428,
-      "allOk": true
+      "totalBytes": 0,
+      "allOk": false
     },
     "ets2_promods_rusmap_roex": {
       "files": {
         "vector/ets2_promods_rusmap_roex.pmtiles": {
-          "ok": true,
-          "bytes": 91660580,
-          "lastModified": "Mon, 21 Sep 2026 16:55:13 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_promods_rusmap_roex/route-graph-ets2_promods_rusmap_roex-v3.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:37 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_promods_rusmap_roex/route-graph-ets2_promods_rusmap_roex.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:33 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_promods_rusmap_roex/Cities.json": {
-          "ok": true,
-          "bytes": 79421,
-          "lastModified": "Thu, 24 Sep 2026 12:07:05 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_promods_rusmap_roex/road-names.json": {
-          "ok": true,
-          "bytes": 5145503,
-          "lastModified": "Thu, 24 Sep 2026 12:07:12 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         }
       },
-      "totalBytes": 96885504,
-      "allOk": true
+      "totalBytes": 0,
+      "allOk": false
     },
     "ets2_gu": {
       "files": {
         "vector/ets2_gu.pmtiles": {
-          "ok": true,
-          "bytes": 8690986,
-          "lastModified": "Tue, 06 Oct 2026 17:16:46 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_gu/route-graph-ets2_gu-v3.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:58 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_gu/route-graph-ets2_gu.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:44 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_gu/Cities.json": {
-          "ok": true,
-          "bytes": 9119,
-          "lastModified": "Tue, 06 Oct 2026 17:16:37 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_gu/road-names.json": {
-          "ok": true,
-          "bytes": 459796,
-          "lastModified": "Tue, 06 Oct 2026 17:16:37 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         }
       },
-      "totalBytes": 9159901,
-      "allOk": true
+      "totalBytes": 0,
+      "allOk": false
     },
     "ets2_eugu": {
       "files": {
         "vector/ets2_eugu.pmtiles": {
-          "ok": true,
-          "bytes": 69054730,
-          "lastModified": "Mon, 05 Oct 2026 15:21:33 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_eugu/route-graph-ets2_eugu-v3.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:37 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_eugu/route-graph-ets2_eugu.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:30 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_eugu/Cities.json": {
-          "ok": true,
-          "bytes": 42009,
-          "lastModified": "Mon, 05 Oct 2026 15:21:30 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_eugu/road-names.json": {
-          "ok": true,
-          "bytes": 3675713,
-          "lastModified": "Mon, 05 Oct 2026 15:21:11 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         }
       },
-      "totalBytes": 72772452,
-      "allOk": true
+      "totalBytes": 0,
+      "allOk": false
     },
     "ets2_promods_eugu": {
       "files": {
         "vector/ets2_promods_eugu.pmtiles": {
-          "ok": true,
-          "bytes": 92942843,
-          "lastModified": "Mon, 05 Oct 2026 15:22:39 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_promods_eugu/route-graph-ets2_promods_eugu-v3.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:30 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_promods_eugu/route-graph-ets2_promods_eugu.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:40 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_promods_eugu/Cities.json": {
-          "ok": true,
-          "bytes": 78727,
-          "lastModified": "Mon, 05 Oct 2026 15:21:42 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_promods_eugu/road-names.json": {
-          "ok": true,
-          "bytes": 5520601,
-          "lastModified": "Mon, 05 Oct 2026 15:21:38 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         }
       },
-      "totalBytes": 98542171,
-      "allOk": true
+      "totalBytes": 0,
+      "allOk": false
     },
     "ets2_tmp": {
       "files": {
         "vector/ets2_tmp.pmtiles": {
-          "ok": true,
-          "bytes": 59375283,
-          "lastModified": "Mon, 21 Sep 2026 14:42:04 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_tmp/route-graph-ets2_tmp-v3.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:55 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_tmp/route-graph-ets2_tmp.bin": {
-          "ok": true,
-          "bytes": 0,
-          "lastModified": "Sun, 11 Oct 2026 00:37:33 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_tmp/Cities.json": {
-          "ok": true,
-          "bytes": 30990,
-          "lastModified": "Thu, 24 Sep 2026 12:07:43 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         },
         "ets2_tmp/road-names.json": {
-          "ok": true,
-          "bytes": 3214090,
-          "lastModified": "Thu, 24 Sep 2026 12:07:43 GMT"
+          "ok": false,
+          "error": "HTTPError: HTTP Error 403: Forbidden"
         }
       },
-      "totalBytes": 62620363,
-      "allOk": true
+      "totalBytes": 0,
+      "allOk": false
     }
   }
 }
