@@ -1,5 +1,5 @@
 {
-  "checkedAt": "2026-11-16T19:35:30Z",
+  "checkedAt": "2026-11-23T21:22:09Z",
   "mods": {
     "c2c": {
       "ours": "2.24.61.0",
@@ -101,15 +101,15 @@
     },
     "grand_utopia": {
       "ours": "1.20d",
-      "upstream": "1.20d",
-      "status": "ok",
+      "upstream": "1.21",
+      "status": "outdated",
       "error": null,
       "source": "https://truckymods.io/euro-truck-simulator-2/maps/grand-utopia-map"
     },
     "eu_grand_utopia": {
       "ours": "1.12",
-      "upstream": "1.12",
-      "status": "ok",
+      "upstream": "1.13",
+      "status": "outdated",
       "error": null,
       "source": "https://truckymods.io/euro-truck-simulator-2/maps/european-grand-utopia"
     },
